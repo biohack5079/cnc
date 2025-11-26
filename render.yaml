@@ -1,0 +1,29 @@
+databases:
+  - name: cybernetcall_db
+    region: singapore
+    plan: free
+    databaseName: cybernetcall_db
+    user: django_user
+
+services:
+  - type: web
+    name: cybernetcall
+    env: python
+    region: singapore
+    buildCommand: './build.sh'
+    startCommand: 'daphne -b 0.0.0.0 -p 10000 cybernetcall.asgi:application'
+    plan: free
+    branch: main
+    healthCheckPath: /
+    envVars:
+      - key: DJANGO_DEBUG
+        value: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cybernetcall_db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: WEB_CONCURRENCY
+        value: 4
+    autoDeploy: true

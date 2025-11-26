@@ -1,0 +1,10 @@
+django==5.0.4
+dj-database-url
+python-decouple
+django-environ
+gunicorn
+psycopg2-binary
+whitenoise
+channels
+channels_redis
+daphne
