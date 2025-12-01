@@ -5,8 +5,8 @@ from channels.auth import AuthMiddlewareStack
 # import cnc.routing # cnc から signaling に変更
 import signaling.routing # signaling アプリのルーティングをインポート
 
-# os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings') # mysite から cybernetcall に変更
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cybernetcall.settings')
+# os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings') # mysite から cnc-pwa に変更
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cnc-pwa.settings')
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),
