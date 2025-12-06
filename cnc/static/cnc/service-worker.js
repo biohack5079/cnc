@@ -2,7 +2,7 @@
 // Service worker with pre-caching for local assets and external libraries
 
 // Define a unique name for the cache, including a version number
-const CACHE_NAME = 'cybernetcall-cache-v5'; // Keep or increment version as needed
+const CACHE_NAME = 'cybernetcall-cache-v6'; // バージョンをインクリメント
 
 // List of URLs to pre-cache when the service worker installs
 const urlsToCache = [
@@ -76,6 +76,78 @@ self.addEventListener('activate', event => {
   );
 });
 
+// ----------------------------------------------------------------------
+// ↓↓↓ FCM / PUSH NOTIFICATION HANDLING (NEW) ↓↓↓
+// ----------------------------------------------------------------------
+
+/**
+ * PUSHイベントが発生した際に実行される。
+ * 通常、FirebaseのSDKがこのイベントをフックし、FCMのペイロードを処理する。
+ * ここでは、FCMのペイロードがService Workerに渡された場合の処理を記述する。
+ * FCM通知ペイロードに'notification'フィールドが含まれていれば、
+ * Firebase SDKが自動的に通知を表示するため、このイベントリスナーは
+ * 'data'フィールドのみの通知（データメッセージ）の場合に特に重要となる。
+ */
+self.addEventListener('push', event => {
+  console.log('[Service Worker] Push received.');
+
+  // 通知ペイロードを取得。JSON形式を想定。
+  const data = event.data ? event.data.json() : {};
+  const notificationTitle = data.notification?.title || 'CyberNetCall Notification';
+  const notificationOptions = {
+    body: data.notification?.body || data.data?.message || 'You have a new activity.',
+    icon: data.notification?.icon || '/static/cnc/icons/icon-192x192.png',
+    badge: '/static/cnc/icons/icon-96x96.png',
+    data: {
+      url: data.data?.url || '/', // 通知クリックで開くURL。メッセージに応じて変更可能。
+      type: data.data?.type // メッセージタイプ (例: 'call', 'direct-message')
+    }
+    // 'actions' (ボタン) もここに追加可能
+  };
+
+  // Service Workerが通知を表示
+  event.waitUntil(
+    self.registration.showNotification(notificationTitle, notificationOptions)
+  );
+});
+
+/**
+ * ユーザーが通知をクリックした際に実行される。
+ */
+self.addEventListener('notificationclick', event => {
+  console.log('[Service Worker] Notification click received.');
+
+  const clickedNotification = event.notification;
+  const targetUrl = clickedNotification.data.url || '/'; // 通知に埋め込んだURLを取得
+  
+  clickedNotification.close(); // 通知を閉じる
+
+  // 既存のクライアント（タブ）を検索し、存在すればそれをフォーカスする
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window' }).then(clientList => {
+      for (let i = 0; i < clientList.length; i++) {
+        const client = clientList[i];
+        // 既に開いているタブがあればそれを再利用
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          // 通知の内容に応じてURLを更新してフォーカス
+          if (client.url !== targetUrl) {
+             return client.navigate(targetUrl).then(focusedClient => focusedClient.focus());
+          }
+          return client.focus();
+        }
+      }
+      // 開いているタブがなければ、新しいタブを開く
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+    })
+  );
+});
+
+// ----------------------------------------------------------------------
+// ↑↑↑ FCM / PUSH NOTIFICATION HANDLING (NEW) ↑↑↑
+// ----------------------------------------------------------------------
+
 // Listen for messages from the client (app.js) if needed in the future
 self.addEventListener('message', event => {
   if (event.data && event.data.type === 'REQUEST_CLIENTS_INFO') {
@@ -133,4 +205,3 @@ self.addEventListener('fetch', event => {
     );
   }
 });
-

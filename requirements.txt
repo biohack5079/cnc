@@ -8,3 +8,4 @@ whitenoise
 channels
 channels_redis
 daphne
+firebase-admin
