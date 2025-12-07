@@ -1,17 +1,8 @@
-// Original variables [cite: 1783]
 let myDeviceId;
 let localStream;
 let peers = {};
 let dataChannels = {};
 let signalingSocket = null;
-
-// --- FCM Variables ---
-let firebaseApp;
-let messaging;
-// FCM_CONFIG_CLIENT は index.html で定義されていることを前提とする
-// ---------------------
-
-// Original AppState [cite: 1784]
 const AppState = {
   INITIAL: 'initial',
   CONNECTING: 'connecting',
@@ -19,8 +10,6 @@ const AppState = {
   ERROR: 'error'
 };
 let currentAppState = AppState.INITIAL;
-
-// Original DOM elements [cite: 1785, 1786]
 let qrElement, statusElement, qrReaderElement, qrResultsElement, localVideoElement, remoteVideoElement, messageAreaElement, postAreaElement;
 let messageInputElement, sendMessageButton, postInputElement, sendPostButton;
 let fileInputElement, sendFileButton, fileTransferStatusElement;
@@ -30,8 +19,6 @@ let remoteVideosContainer;
 let incomingCallModal, callerIdElement, acceptCallButton, rejectCallButton;
 let currentCallerId = null;
 let friendListElement;
-
-// Original state variables [cite: 1787, 1788, 1789, 1790, 1791]
 let pendingConnectionFriendId = null;
 let receivedSize = {};
 let incomingFileInfo = {};
@@ -55,8 +42,6 @@ const CHUNK_SIZE = 16384;
 let fileReader;
 const DB_NAME = 'cybernetcall-db';
 const DB_VERSION = 3;
-
-// Original IDB initialization [cite: 1792, 1793]
 let dbPromise = typeof idb !== 'undefined' ? idb.openDB(DB_NAME, DB_VERSION, {
   upgrade(db, oldVersion) {
     if (!db.objectStoreNames.contains('posts')) {
@@ -76,927 +61,787 @@ if (!dbPromise) {
 let statusMessages = [];
 const MAX_STATUS_MESSAGES = 1000;
 
-// --- FCM/CSRF Utility Functions ---
-
-/**
- * Retrieves the CSRF token from cookies for Django POST requests.
- * @param {string} name The name of the cookie (e.g., 'csrftoken').
- * @returns {string|null} The cookie value or null.
- */
-function getCookie(name) {
-    let cookieValue = null;
-    if (document.cookie && document.cookie !== '') {
-        const cookies = document.cookie.split(';');
-        for (let i = 0; i < cookies.length; i++) {
-            const cookie = cookies[i].trim();
-            if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                break;
-            }
-        }
-    }
-    return cookieValue;
-}
-
-/**
- * Initializes Firebase and sets up the Messaging service.
- */
-function initFCM() {
-    // FCM_CONFIG_CLIENTはindex.htmlで定義されていることを前提
-    if (typeof firebase === 'undefined' || typeof FCM_CONFIG_CLIENT === 'undefined' || !FCM_CONFIG_CLIENT.apiKey) {
-        updateStatus("FCM: Firebase SDK or configuration not available. Notifications disabled.", 'orange');
-        return;
-    }
-    try {
-        // Appの初期化は一度だけ行う
-        if (!firebase.apps.length) {
-            firebaseApp = firebase.initializeApp(FCM_CONFIG_CLIENT);
-            messaging = firebase.messaging();
-            updateStatus("FCM: Firebase initialized.", 'blue');
-
-            // フォアグラウンドメッセージのハンドリング
-            messaging.onMessage((payload) => {
-                console.log('FCM Foreground message received. ', payload);
-                updateStatus(`FCM: New Notification - ${payload.notification?.title} (${payload.data?.type})`, 'blue');
-                // PWAの通知として表示（PayloadをService Workerに渡す）
-                navigator.serviceWorker.ready.then(registration => {
-                    if (payload.notification) {
-                         registration.showNotification(payload.notification.title || 'New Message', {
-                            body: payload.notification.body,
-                            icon: payload.notification.icon || '/static/cnc/icons/icon-192x192.png',
-                            data: payload.data
-                        });
-                    }
-                });
-            });
-        }
-    } catch (e) {
-        updateStatus(`FCM initialization error: ${e.message}`, 'red');
-    }
-}
-
-/**
- * Sends the FCM token and myDeviceId to the Django server for storage.
- * @param {string} token The FCM registration token.
- */
-async function saveFCMTokenToServer(token) {
-    if (!token || !myDeviceId) {
-        return;
-    }
-    updateStatus('FCM: Sending token to server...', 'blue');
-    try {
-        const csrfToken = getCookie('csrftoken');
-        const response = await fetch('/api/save_fcm_token/', { // 仮定されるDjangoのエンドポイント
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': csrfToken // DjangoのCSRF保護に対応
-            },
-            body: JSON.stringify({
-                user_id: myDeviceId,
-                fcm_token: token,
-            })
-        });
-
-        if (response.ok) {
-            updateStatus('FCM: Token saved successfully on server.', 'green');
-        } else {
-            updateStatus(`FCM: Failed to save token on server. Status: ${response.status}`, 'red');
-        }
-    } catch (error) {
-        updateStatus(`FCM: Network error saving token: ${error.message}`, 'red');
-    }
-}
-
-/**
- * Requests notification permission, retrieves the FCM token, and saves it to the server.
- */
-async function requestFCMToken() {
-    if (typeof messaging === 'undefined') {
-        return;
-    }
-    updateStatus('FCM: Requesting notification permission...', 'blue');
-    try {
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-            updateStatus('FCM: Notification permission granted. Getting token...', 'blue');
-            // VAPIDキーはFCM_CONFIG_CLIENTに含まれていることを想定
-            const currentToken = await messaging.getToken({ vapidKey: FCM_CONFIG_CLIENT.vapidKey });
-            if (currentToken) {
-                updateStatus('FCM: Token retrieved successfully.', 'green');
-                await saveFCMTokenToServer(currentToken);
-            } else {
-                updateStatus('FCM: No registration token available. Request permission again.', 'orange');
-            }
-        } else {
-            updateStatus('FCM: Notification permission denied.', 'orange');
-        }
-
-        // トークンが更新された場合のハンドリング
-        messaging.onTokenRefresh(async () => {
-            updateStatus('FCM: Token refreshing...', 'blue');
-            try {
-                const refreshedToken = await messaging.getToken({ vapidKey: FCM_CONFIG_CLIENT.vapidKey });
-                await saveFCMTokenToServer(refreshedToken);
-            } catch (error) {
-                updateStatus(`FCM: Error refreshing token: ${error.message}`, 'red');
-            }
-        });
-
-    } catch (error) {
-        updateStatus(`FCM: Error getting token: ${error.message}`, 'red');
-    }
-}
-
-// ---------------------
-
-// Original utility functions (Partial content, full code follows structure)
-
-function generateUUID() { [cite: 1794]
+function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     let r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
 }
 
-function linkify(text) { [cite: 1795]
+
+function linkify(text) {
     if (!text) return '';
 
-    const urlPattern = /(\b(https?|ftp):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])|(\bwww\.[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig; [cite: 1795]
-    text = text.replace(urlPattern, function(url) { [cite: 1796]
+
+    const urlPattern = /(\b(https?|ftp):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])|(\bwww\.[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
+    text = text.replace(urlPattern, function(url) {
         let fullUrl = url;
         if (!url.match(/^https?:\/\//i) && url.startsWith('www.')) {
             fullUrl = 'http://' + url;
         }
-        return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`; [cite: 1796]
+        return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
     });
-    const emailPattern = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi; [cite: 1797]
+
+    const emailPattern = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
     text = text.replace(emailPattern, function(email) {
-        return `<a href="mailto:${email}">${email}</a>`; [cite: 1797]
+        return `<a href="mailto:${email}">${email}</a>`;
     });
-    return text; [cite: 1798]
+
+    return text;
 }
 
-function renderStatusMessages() { [cite: 1798]
+function renderStatusMessages() {
     if (!statusElement) return;
-    statusElement.innerHTML = ''; [cite: 1799]
+    statusElement.innerHTML = '';
     // statusMessages は unshift で追加しているので、そのままの順で表示すると新しいものが上に来る
-    statusMessages.forEach(msgObj => { [cite: 1799]
+    statusMessages.forEach(msgObj => {
         const div = document.createElement('div');
         div.textContent = msgObj.text;
         div.style.color = msgObj.color;
         statusElement.appendChild(div);
     });
-    statusElement.style.display = statusMessages.length > 0 ? 'block' : 'none'; [cite: 1800]
+    statusElement.style.display = statusMessages.length > 0 ? 'block' : 'none';
     // 必要であれば、常に一番下にスクロールする (新しいメッセージが下に追加される場合)
-    // statusElement.scrollTop = statusElement.scrollHeight; [cite: 1800]
+    // statusElement.scrollTop = statusElement.scrollHeight;
 }
 
-function updateStatus(message, color = 'black') { [cite: 1801]
+function updateStatus(message, color = 'black') {
     if (!statusElement) return;
 
-    const messageText = String(message || ''); [cite: 1801, 1802]
+    const messageText = String(message || '');
+
     // 明示的に空のメッセージが指定された場合は、全てのステータスをクリアする
-    if (messageText === '') { [cite: 1802]
+    if (messageText === '') {
         statusMessages = [];
-        renderStatusMessages(); [cite: 1803]
+        renderStatusMessages();
         return;
     }
     const newMessage = {
-        id: generateUUID(), // メッセージごとのユニークID [cite: 1803]
+        id: generateUUID(), // メッセージごとのユニークID
         text: messageText,
         color: color,
         timestamp: new Date() // タイムスタンプを追加
     };
-    statusMessages.unshift(newMessage); // 新しいメッセージを配列の先頭に追加 [cite: 1804]
+    statusMessages.unshift(newMessage); // 新しいメッセージを配列の先頭に追加
 
     if (statusMessages.length > MAX_STATUS_MESSAGES) {
-        statusMessages.length = MAX_STATUS_MESSAGES; [cite: 1804, 1805]
-    // 配列の末尾 (古いメッセージ) から削除
+        statusMessages.length = MAX_STATUS_MESSAGES; // 配列の末尾 (古いメッセージ) から削除
     }
-    renderStatusMessages(); [cite: 1805]
+    renderStatusMessages();
 }
 
 
-function setInteractionUiEnabled(enabled) { [cite: 1806]
+function setInteractionUiEnabled(enabled) {
     const disabled = !enabled;
-    if (messageInputElement) messageInputElement.disabled = disabled; [cite: 1806]
+    if (messageInputElement) messageInputElement.disabled = disabled;
     if (sendMessageButton) sendMessageButton.disabled = disabled;
-    if (postInputElement) postInputElement.disabled = disabled; [cite: 1807]
+    if (postInputElement) postInputElement.disabled = disabled;
     if (sendPostButton) sendPostButton.disabled = disabled;
     if (fileInputElement) fileInputElement.disabled = disabled;
-    if (sendFileButton) sendFileButton.disabled = disabled; [cite: 1807]
-    if (callButton) callButton.disabled = disabled; [cite: 1808]
+    if (sendFileButton) sendFileButton.disabled = disabled;
+    if (callButton) callButton.disabled = disabled;
     if (videoButton) videoButton.disabled = disabled;
 
 }
-async function savePost(post) { [cite: 1808]
+async function savePost(post) {
   if (!dbPromise) return;
-  try { [cite: 1809]
+  try {
     const db = await dbPromise;
     const tx = db.transaction('posts', 'readwrite');
     await tx.store.put(post);
-    await tx.done; [cite: 1809]
-  } catch (error) { [cite: 1810]
+    await tx.done;
+  } catch (error) {
   }
 }
-async function deletePostFromDb(postId) { [cite: 1810]
+async function deletePostFromDb(postId) {
   if (!dbPromise) return;
-  try { [cite: 1811]
+  try {
     const db = await dbPromise;
     const tx = db.transaction('posts', 'readwrite');
-    await tx.store.delete(postId); [cite: 1811]
+    await tx.store.delete(postId);
     await tx.done;
-  } catch (error) { [cite: 1812]
+  } catch (error) {
   }
 }
-async function addFriend(friendId, friendName = null) { [cite: 1812]
+async function addFriend(friendId, friendName = null) {
   if (!dbPromise || !friendId) return;
-  if (friendId === myDeviceId) { [cite: 1813]
+  if (friendId === myDeviceId) {
       alert("You cannot add yourself as a friend.");
-      return; [cite: 1814]
+      return;
   }
   try {
-    const db = await dbPromise; [cite: 1814]
-    const tx = db.transaction('friends', 'readwrite'); [cite: 1815]
+    const db = await dbPromise;
+    const tx = db.transaction('friends', 'readwrite');
     const existing = await tx.store.get(friendId);
-    if (existing) { [cite: 1815]
-        updateStatus(`Friend (${friendId.substring(0,6)}) is already added.`, 'orange'); [cite: 1815, 1816]
+    if (existing) {
+        updateStatus(`Friend (${friendId.substring(0,6)}) is already added.`, 'orange');
         return;
     }
-    await tx.store.put({ id: friendId, name: friendName, added: new Date() }); [cite: 1816]
+    await tx.store.put({ id: friendId, name: friendName, added: new Date() });
     await tx.done;
-    updateStatus(`Friend (${friendId.substring(0,6)}) added successfully!`, 'green'); [cite: 1817]
+    updateStatus(`Friend (${friendId.substring(0,6)}) added successfully!`, 'green');
     await displayFriendList();
   } catch (error) {
-    updateStatus("Failed to add friend.", 'red'); [cite: 1817, 1818]
+    updateStatus("Failed to add friend.", 'red');
   }
 }
-async function isFriend(friendId, dbInstance = null) { [cite: 1818]
+async function isFriend(friendId, dbInstance = null) {
   if (!dbPromise || !friendId) return false;
-  try { [cite: 1819]
+  try {
     const db = dbInstance || await dbPromise;
-    const friend = await db.get('friends', friendId); [cite: 1819]
+    const friend = await db.get('friends', friendId);
     return !!friend;
-  } catch (error) { [cite: 1820]
+  } catch (error) {
     return false;
   }
 }
-async function displayFriendList() { [cite: 1820]
+async function displayFriendList() {
   if (!dbPromise || !friendListElement) return;
-  try { [cite: 1821]
+  try {
     const db = await dbPromise;
     const friends = await db.getAll('friends');
-    friendListElement.innerHTML = '<h3>Friends</h3>'; [cite: 1821, 1822]
+    friendListElement.innerHTML = '<h3>Friends</h3>';
     if (friends.length === 0) {
-        friendListElement.innerHTML += '<p>No friends added yet. [cite: 1822] Scan their QR code!</p>'; [cite: 1823]
+        friendListElement.innerHTML += '<p>No friends added yet. Scan their QR code!</p>';
     }
-    friends.forEach(friend => displaySingleFriend(friend)); [cite: 1823, 1824]
-  } catch (error) { [cite: 1824]
+    friends.forEach(friend => displaySingleFriend(friend));
+  } catch (error) {
   }
 }
-async function displayInitialPosts() { [cite: 1824]
+async function displayInitialPosts() {
   if (!dbPromise || !postAreaElement) return;
-  try { [cite: 1825]
+  try {
     const db = await dbPromise;
     const posts = await db.getAll('posts');
-    postAreaElement.innerHTML = ''; [cite: 1825, 1826]
+    postAreaElement.innerHTML = '';
     posts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    posts.forEach(post => displayPost(post, false)); [cite: 1826, 1827]
-  } catch (error) { [cite: 1827]
+    posts.forEach(post => displayPost(post, false));
+  } catch (error) {
   }
 }
-function displayPost(post, isNew = true) { [cite: 1827]
+function displayPost(post, isNew = true) {
   if (!postAreaElement) return;
-  const div = document.createElement('div'); [cite: 1828]
+  const div = document.createElement('div');
   div.className = 'post';
   div.id = `post-${post.id}`;
   const contentSpan = document.createElement('span');
-  const linkedContent = linkify(post.content); [cite: 1828, 1829]
-  contentSpan.innerHTML = DOMPurify.sanitize(`<strong>${post.sender ? post.sender.substring(0, 6) : 'Unknown'}:</strong> ${linkedContent}`); [cite: 1829]
+  const linkedContent = linkify(post.content);
+  contentSpan.innerHTML = DOMPurify.sanitize(`<strong>${post.sender ? post.sender.substring(0, 6) : 'Unknown'}:</strong> ${linkedContent}`);
   const deleteButton = document.createElement('button');
   deleteButton.textContent = '❌';
-  deleteButton.className = 'delete-post-button'; [cite: 1829, 1830]
+  deleteButton.className = 'delete-post-button';
   deleteButton.dataset.postId = post.id;
   deleteButton.style.marginLeft = '10px';
   deleteButton.style.cursor = 'pointer';
   deleteButton.style.border = 'none';
   deleteButton.style.background = 'none';
-  deleteButton.ariaLabel = 'Delete post'; [cite: 1830, 1831]
+  deleteButton.ariaLabel = 'Delete post';
   deleteButton.addEventListener('click', handleDeletePost);
   div.appendChild(contentSpan);
   div.appendChild(deleteButton);
-  if (isNew && postAreaElement.firstChild) { [cite: 1831]
+  if (isNew && postAreaElement.firstChild) {
       postAreaElement.insertBefore(div, postAreaElement.firstChild);
-  } else { [cite: 1832]
+  } else {
       postAreaElement.appendChild(div);
   }
 }
-async function handleDeletePost(event) { [cite: 1832]
+async function handleDeletePost(event) {
     const button = event.currentTarget;
-    const postId = button.dataset.postId; [cite: 1833]
+    const postId = button.dataset.postId;
     if (!postId) return;
-    const postElement = document.getElementById(`post-${postId}`); [cite: 1833, 1834]
+    const postElement = document.getElementById(`post-${postId}`);
     if (postElement) {
-        postElement.remove(); [cite: 1834]
+        postElement.remove();
     }
-    await deletePostFromDb(postId); [cite: 1834]
-    const postDeleteMessage = JSON.stringify({ [cite: 1835]
+    await deletePostFromDb(postId);
+    const postDeleteMessage = JSON.stringify({
         type: 'delete-post',
         postId: postId
     });
-    broadcastMessage(postDeleteMessage); [cite: 1836]
+    broadcastMessage(postDeleteMessage);
 }
-function displaySingleFriend(friend) { [cite: 1836]
+function displaySingleFriend(friend) {
     if (!friendListElement) return;
     const div = document.createElement('div');
     div.className = 'friend-item';
-    div.dataset.friendId = friend.id; [cite: 1836, 1837]
+    div.dataset.friendId = friend.id;
     const nameSpan = document.createElement('span');
     nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}...`;
-    const callFriendButton = document.createElement('button'); [cite: 1837]
+    const callFriendButton = document.createElement('button');
     callFriendButton.textContent = '📞 Call';
     callFriendButton.dataset.friendId = friend.id;
-    callFriendButton.addEventListener('click', handleCallFriendClick); [cite: 1838]
+    callFriendButton.addEventListener('click', handleCallFriendClick);
     callFriendButton.disabled = !signalingSocket || signalingSocket.readyState !== WebSocket.OPEN || currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED;
     div.appendChild(nameSpan);
     div.appendChild(callFriendButton);
-    friendListElement.appendChild(div); [cite: 1839]
+    friendListElement.appendChild(div);
 }
-async function connectWebSocket() { [cite: 1839]
+async function connectWebSocket() {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
-    return; [cite: 1840]
+    return;
   }
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; [cite: 1840]
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${wsProtocol}//${location.host}/ws/signaling/`;
-  updateStatus('Connecting to signaling server...', 'blue'); [cite: 1841]
+  updateStatus('Connecting to signaling server...', 'blue');
   signalingSocket = new WebSocket(wsUrl);
-  signalingSocket.onopen = () => { [cite: 1841]
-    wsReconnectAttempts = 0; [cite: 1842]
+  signalingSocket.onopen = () => {
+    wsReconnectAttempts = 0;
     isAttemptingReconnect = false;
-    if (wsReconnectTimer) { [cite: 1842]
+    if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
-      wsReconnectTimer = null; [cite: 1843]
+      wsReconnectTimer = null;
     }
-    updateStatus('Connected to signaling server. Registering...', 'blue'); [cite: 1843, 1844]
+    updateStatus('Connected to signaling server. Registering...', 'blue');
     sendSignalingMessage({
       type: 'register',
-      payload: { uuid: myDeviceId } [cite: 1844]
+      payload: { uuid: myDeviceId }
     });
-  }; [cite: 1845]
-  signalingSocket.onmessage = async (event) => { [cite: 1845]
+  };
+  signalingSocket.onmessage = async (event) => {
     try {
-      const message = JSON.parse(event.data); [cite: 1845, 1846]
+      const message = JSON.parse(event.data);
       const messageType = message.type;
       const payload = message.payload || {};
-      const senderUUID = message.from || message.uuid || payload.uuid; [cite: 1846, 1847]
-      switch (messageType) { [cite: 1847]
+      const senderUUID = message.from || message.uuid || payload.uuid;
+      switch (messageType) {
         case 'registered':
-            updateStatus('Connected to signaling server. Ready.', 'green'); [cite: 1847]
-            currentAppState = AppState.INITIAL; [cite: 1848]
+            updateStatus('Connected to signaling server. Ready.', 'green');
+            currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
             await displayFriendList();
             if (pendingConnectionFriendId) {
-                await createOfferForPeer(pendingConnectionFriendId); [cite: 1848]
-                pendingConnectionFriendId = null; [cite: 1849]
+                await createOfferForPeer(pendingConnectionFriendId);
+                pendingConnectionFriendId = null;
             }
-            // ↓↓↓ FCM Token Request Addition ↓↓↓
-            if (typeof messaging !== 'undefined' && myDeviceId) {
-                await requestFCMToken();
-            }
-            // ↑↑↑ FCM Token Request Addition ↑↑↑
-            break; [cite: 1849, 1850]
-        case 'user_list': [cite: 1850]
-            onlineFriendsCache.clear(); [cite: 1850, 1851]
+            break;
+        case 'user_list':
+            onlineFriendsCache.clear();
             if (dbPromise && message.users && Array.isArray(message.users)) {
-                const db = await dbPromise; [cite: 1851, 1852]
+                const db = await dbPromise;
                 for (const userId of message.users) {
                     if (userId !== myDeviceId && await isFriend(userId, db)) {
-                        onlineFriendsCache.add(userId); [cite: 1852, 1853]
+                        onlineFriendsCache.add(userId);
                     }
                 }
             }
-            break; [cite: 1853, 1854]
+            break;
         case 'user_joined':
-        case 'user_online': [cite: 1854]
+        case 'user_online':
             const joinedUUID = message.uuid;
-            if (joinedUUID && joinedUUID !== myDeviceId) { [cite: 1855]
+            if (joinedUUID && joinedUUID !== myDeviceId) {
                 await displayFriendList();
-                const friendExists = await isFriend(joinedUUID); [cite: 1856]
+                const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
-                    onlineFriendsCache.add(joinedUUID); [cite: 1856]
-                    if (peers[joinedUUID]) { [cite: 1857]
+                    onlineFriendsCache.add(joinedUUID);
+                    if (peers[joinedUUID]) {
                         if (peers[joinedUUID].connectionState === 'connecting') {
-                          return; [cite: 1857, 1858]
-                        }
-                        const currentState = peers[joinedUUID].connectionState; [cite: 1858, 1859]
+                          return;
+                      }
+                        const currentState = peers[joinedUUID].connectionState;
                         if (currentState === 'connected' || currentState === 'connecting') {
-                        } else { [cite: 1859, 1905]
+                        } else {
                             closePeerConnection(joinedUUID);
-                            await createOfferForPeer(joinedUUID); [cite: 1860]
+                            await createOfferForPeer(joinedUUID);
                         }
                     } else {
-                        await createOfferForPeer(joinedUUID); [cite: 1860, 1861]
+                        await createOfferForPeer(joinedUUID);
                     }
                 } else {
-                    updateStatus(`Peer ${joinedUUID.substring(0,6)} joined (NOT a friend).`, 'gray'); [cite: 1861, 1862]
+                    updateStatus(`Peer ${joinedUUID.substring(0,6)} joined (NOT a friend).`, 'gray');
                 }
             }
-            break; [cite: 1862, 1863]
-        case 'user_left': [cite: 1863]
+            break;
+        case 'user_left':
             const leftUUID = message.uuid;
-            if (leftUUID && leftUUID !== myDeviceId) { [cite: 1864]
+             if (leftUUID && leftUUID !== myDeviceId) {
                 onlineFriendsCache.delete(leftUUID);
-                updateStatus(`Peer ${leftUUID.substring(0,6)} left`, 'orange'); [cite: 1864]
+                updateStatus(`Peer ${leftUUID.substring(0,6)} left`, 'orange');
                 closePeerConnection(leftUUID);
-                await displayFriendList(); [cite: 1865]
+                await displayFriendList();
              }
-            break; [cite: 1865, 1866]
-        case 'offer': [cite: 1866]
+            break;
+        case 'offer':
             if (senderUUID) {;
-                await handleOfferAndCreateAnswer(senderUUID, payload.sdp); [cite: 1866, 1867]
+                await handleOfferAndCreateAnswer(senderUUID, payload.sdp);
             }
-            break; [cite: 1867, 1868]
-        case 'answer': [cite: 1868]
+            break;
+        case 'answer':
              if (senderUUID) {
-                console.log(`Received answer from ${senderUUID}`); [cite: 1868, 1869]
+                console.log(`Received answer from ${senderUUID}`);
                 await handleAnswer(senderUUID, payload.sdp);
-            } else { console.warn("Answer received without sender UUID"); [cite: 1869, 1870]
-            }
-            break; [cite: 1870, 1871]
-        case 'ice-candidate': [cite: 1871]
+            } else { console.warn("Answer received without sender UUID"); }
+            break;
+        case 'ice-candidate':
              if (senderUUID) {
-                await handleIceCandidate(senderUUID, payload.candidate); [cite: 1871, 1872]
+                await handleIceCandidate(senderUUID, payload.candidate);
             }
-            break; [cite: 1872, 1873]
-        case 'call-request': [cite: 1873]
+            break;
+        case 'call-request':
              if (senderUUID) {
-                handleIncomingCall(senderUUID); [cite: 1873, 1874]
+                handleIncomingCall(senderUUID);
             }
-            break; [cite: 1874, 1875]
-        case 'call-accepted': [cite: 1875]
+            break;
+        case 'call-accepted':
              if (senderUUID) {
-                updateStatus(`Call accepted by ${senderUUID.substring(0,6)}. Connecting...`, 'blue'); [cite: 1875, 1876]
+                updateStatus(`Call accepted by ${senderUUID.substring(0,6)}. Connecting...`, 'blue');
                 await createOfferForPeer(senderUUID);
             }
-            break; [cite: 1876, 1877]
-        case 'call-rejected': [cite: 1877]
+            break;
+        case 'call-rejected':
              if (senderUUID) {
-                handleCallRejected(senderUUID); [cite: 1877, 1878]
+                handleCallRejected(senderUUID);
             }
-            break; [cite: 1878, 1879]
-        case 'call-busy': [cite: 1879]
+            break;
+        case 'call-busy':
              if (senderUUID) {
-                handleCallBusy(senderUUID); [cite: 1879, 1880]
+                handleCallBusy(senderUUID);
             }
-            break; [cite: 1880, 1881]
+            break;
       }
-    } catch (error) { [cite: 1881]
+    } catch (error) {
     }
   };
-  signalingSocket.onclose = async (event) => { [cite: 1882]
+  signalingSocket.onclose = async (event) => {
     const code = event.code;
-    const reason = event.reason; [cite: 1882, 1883]
+    const reason = event.reason;
     console.log(`WebSocket disconnected: Code=${code}, Reason='${reason}', Current Attempts=${wsReconnectAttempts}`);
-    const socketInstanceThatClosed = event.target; [cite: 1883, 1884]
+    const socketInstanceThatClosed = event.target;
     if (socketInstanceThatClosed) {
         socketInstanceThatClosed.onopen = null;
         socketInstanceThatClosed.onmessage = null;
-        socketInstanceThatClosed.onerror = null; [cite: 1884, 1885]
+        socketInstanceThatClosed.onerror = null;
         socketInstanceThatClosed.onclose = null;
     }
-    if (signalingSocket !== socketInstanceThatClosed && signalingSocket !== null) { [cite: 1885, 1886]
+    if (signalingSocket !== socketInstanceThatClosed && signalingSocket !== null) {
         return;
     }
     signalingSocket = null;
 
-    if ((code === 1000 || code === 1001) && !isAttemptingReconnect) { [cite: 1886]
-        updateStatus('Signaling connection closed.', 'orange'); [cite: 1887]
+    if ((code === 1000 || code === 1001) && !isAttemptingReconnect) {
+        updateStatus('Signaling connection closed.', 'orange');
         resetConnection();
         await displayFriendList();
         return;
       }
-      if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS && isAttemptingReconnect) { [cite: 1887]
-        updateStatus('Signaling connection lost. Please refresh the page.', 'red'); [cite: 1888]
+      if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS && isAttemptingReconnect) {
+        updateStatus('Signaling connection lost. Please refresh the page.', 'red');
         resetConnection();
         await displayFriendList();
         isAttemptingReconnect = false;
-        wsReconnectAttempts = 0; [cite: 1888, 1889]
+        wsReconnectAttempts = 0;
         return;
       }
-      if (!isAttemptingReconnect) { [cite: 1889]
+      if (!isAttemptingReconnect) {
         isAttemptingReconnect = true;
-        wsReconnectAttempts = 0; [cite: 1890]
+        wsReconnectAttempts = 0;
       }
       wsReconnectAttempts++;
-      let delay = INITIAL_WS_RECONNECT_DELAY_MS * Math.pow(1.5, wsReconnectAttempts - 1); [cite: 1890, 1891]
+      let delay = INITIAL_WS_RECONNECT_DELAY_MS * Math.pow(1.5, wsReconnectAttempts - 1);
       delay = Math.min(delay, MAX_WS_RECONNECT_DELAY_MS);
-      updateStatus(`Signaling disconnected. Reconnecting in ${Math.round(delay/1000)}s (Attempt ${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`, 'orange'); [cite: 1891]
+      updateStatus(`Signaling disconnected. Reconnecting in ${Math.round(delay/1000)}s (Attempt ${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`, 'orange');
       Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID));
-      Object.values(dataChannels).forEach(channel => { if (channel && channel.readyState !== 'closed') channel.close(); }); [cite: 1892]
+      Object.values(dataChannels).forEach(channel => { if (channel && channel.readyState !== 'closed') channel.close(); });
       dataChannels = {};
       setInteractionUiEnabled(false);
-      currentAppState = AppState.CONNECTING; [cite: 1892, 1893]
+      currentAppState = AppState.CONNECTING;
       if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-      wsReconnectTimer = setTimeout(async () => { [cite: 1893]
+      wsReconnectTimer = setTimeout(async () => {
         await connectWebSocket();
       }, delay);
-  }; [cite: 1894]
-  signalingSocket.onerror = (error) => { [cite: 1894]
+  };
+  signalingSocket.onerror = (error) => {
     if (signalingSocket && (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING)) {
-        signalingSocket.close(); [cite: 1894, 1895]
+        signalingSocket.close();
     } else if (!signalingSocket && !isAttemptingReconnect) {
     }
-  }; [cite: 1895, 1896]
+  };
 }
-function sendSignalingMessage(message) { [cite: 1896]
+function sendSignalingMessage(message) {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
-    if (!message.payload) message.payload = {}; [cite: 1896, 1897]
+    if (!message.payload) message.payload = {};
     if (!message.payload.uuid) message.payload.uuid = myDeviceId;
-    signalingSocket.send(JSON.stringify(message)); [cite: 1897]
+    signalingSocket.send(JSON.stringify(message));
   } else {
-    updateStatus('Signaling connection not ready.', 'red'); [cite: 1897, 1898]
+    updateStatus('Signaling connection not ready.', 'red');
   }
 }
-function startAutoConnectFriendsTimer() { [cite: 1898]
+function startAutoConnectFriendsTimer() {
   if (autoConnectFriendsTimer) {
-      clearInterval(autoConnectFriendsTimer); [cite: 1898]
+      clearInterval(autoConnectFriendsTimer);
   }
   autoConnectFriendsTimer = setInterval(attemptAutoConnectToFriends, AUTO_CONNECT_INTERVAL);
-  attemptAutoConnectToFriends(); [cite: 1899]
+  attemptAutoConnectToFriends();
 }
-function stopAutoConnectFriendsTimer() { [cite: 1899]
+function stopAutoConnectFriendsTimer() {
   if (autoConnectFriendsTimer) {
-      clearInterval(autoConnectFriendsTimer); [cite: 1900]
+      clearInterval(autoConnectFriendsTimer);
       autoConnectFriendsTimer = null;
   }
-} [cite: 1900]
-async function attemptAutoConnectToFriends() { [cite: 1900]
+}
+async function attemptAutoConnectToFriends() {
   if (!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
-      return; [cite: 1901]
+      return;
   }
   if (currentAppState === AppState.CONNECTING && Object.keys(peers).some(id => peers[id]?.connectionState === 'connecting')) {
-      return; [cite: 1901, 1902]
+      return;
   }
   if (!dbPromise) {
-      return; [cite: 1902, 1903]
+      return;
   }
   try {
-      const db = await dbPromise; [cite: 1903, 1904]
+      const db = await dbPromise;
       const friends = await db.getAll('friends');
-      if (friends.length === 0) return; [cite: 1904]
+      if (friends.length === 0) return;
       for (const friend of friends) {
-          if (friend.id === myDeviceId) continue; [cite: 1905]
-          const isPeerConnectedOrConnecting = peers[friend.id] && (peers[friend.id].connectionState === 'connected' || peers[friend.id].connectionState === 'connecting' || peers[friend.id].connectionState === 'new'); [cite: 1905, 1906]
+          if (friend.id === myDeviceId) continue;
+          const isPeerConnectedOrConnecting = peers[friend.id] && (peers[friend.id].connectionState === 'connected' || peers[friend.id].connectionState === 'connecting' || peers[friend.id].connectionState === 'new');
           const isPeerUnderIndividualReconnect = peerReconnectInfo[friend.id] && peerReconnectInfo[friend.id].isReconnecting;
-          if (onlineFriendsCache.has(friend.id) && !isPeerConnectedOrConnecting && !isPeerUnderIndividualReconnect) { [cite: 1906, 1907]
+          if (onlineFriendsCache.has(friend.id) && !isPeerConnectedOrConnecting && !isPeerUnderIndividualReconnect) {
               updateStatus(`Auto-connecting to ${friend.id.substring(0,6)}...`, 'blue');
-              await createOfferForPeer(friend.id, true); [cite: 1907]
+              await createOfferForPeer(friend.id, true);
           }
       }
-  } catch (error) { [cite: 1907]
+  } catch (error) {
   }
 }
-async function startPeerReconnect(peerUUID) { [cite: 1907, 1908]
+async function startPeerReconnect(peerUUID) {
     if (!peers[peerUUID] || (peerReconnectInfo[peerUUID] && peerReconnectInfo[peerUUID].isReconnecting)) {
-        return; [cite: 1908]
-    }
-    if (!await isFriend(peerUUID)) {
-        closePeerConnection(peerUUID); [cite: 1908, 1909]
         return;
     }
-    peerReconnectInfo[peerUUID] = { [cite: 1909, 1910]
+    if (!await isFriend(peerUUID)) {
+        closePeerConnection(peerUUID);
+        return;
+    }
+    peerReconnectInfo[peerUUID] = {
         attempts: 0,
         timerId: null,
         isReconnecting: true
     };
-    schedulePeerReconnectAttempt(peerUUID); [cite: 1910]
+    schedulePeerReconnectAttempt(peerUUID);
 }
-function schedulePeerReconnectAttempt(peerUUID) { [cite: 1910, 1911]
+function schedulePeerReconnectAttempt(peerUUID) {
     const info = peerReconnectInfo[peerUUID];
-    if (!info || !info.isReconnecting) { [cite: 1911]
+    if (!info || !info.isReconnecting) {
         return;
     }
-    info.attempts++; [cite: 1912]
+    info.attempts++;
     if (info.attempts > MAX_PEER_RECONNECT_ATTEMPTS) {
-        updateStatus(`Failed to reconnect with ${peerUUID.substring(0,6)}.`, 'red'); [cite: 1912, 1913]
+        updateStatus(`Failed to reconnect with ${peerUUID.substring(0,6)}.`, 'red');
         info.isReconnecting = false;
-        closePeerConnection(peerUUID); [cite: 1913]
+        closePeerConnection(peerUUID);
         return;
     }
-    let delay = INITIAL_PEER_RECONNECT_DELAY_MS * Math.pow(1.5, info.attempts - 1); [cite: 1913, 1914]
+    let delay = INITIAL_PEER_RECONNECT_DELAY_MS * Math.pow(1.5, info.attempts - 1);
     delay = Math.min(delay, 30000);
-    updateStatus(`Reconnecting to ${peerUUID.substring(0,6)} (attempt ${info.attempts})...`, 'orange'); [cite: 1914]
+    updateStatus(`Reconnecting to ${peerUUID.substring(0,6)} (attempt ${info.attempts})...`, 'orange');
     if (info.timerId) clearTimeout(info.timerId);
-    info.timerId = setTimeout(async () => { [cite: 1915]
+    info.timerId = setTimeout(async () => {
         if (!info || !info.isReconnecting) return;
         if (peers[peerUUID] && peers[peerUUID].connectionState !== 'closed' && peers[peerUUID].connectionState !== 'failed') {
             closePeerConnection(peerUUID, true);
         }
         if (!peers[peerUUID]) {
             await createOfferForPeer(peerUUID, true);
-        } [cite: 1915, 1916]
+        }
     }, delay);
 }
-function stopPeerReconnect(peerUUID) { [cite: 1916]
+function stopPeerReconnect(peerUUID) {
     const info = peerReconnectInfo[peerUUID];
-    if (info) { [cite: 1917]
+    if (info) {
         if (info.timerId) clearTimeout(info.timerId);
-        info.isReconnecting = false; [cite: 1917]
-        delete peerReconnectInfo[peerUUID]; [cite: 1918]
+        info.isReconnecting = false;
+        delete peerReconnectInfo[peerUUID];
     }
 }
-function setNegotiationTimeout(peerUUID) { [cite: 1918]
+function setNegotiationTimeout(peerUUID) {
     if (peerNegotiationTimers[peerUUID]) {
-        clearTimeout(peerNegotiationTimers[peerUUID]); [cite: 1918, 1919]
+        clearTimeout(peerNegotiationTimers[peerUUID]);
     }
     peerNegotiationTimers[peerUUID] = setTimeout(async () => {
-        if (peers[peerUUID] && peers[peerUUID].connectionState !== 'connected') { [cite: 1919]
+        if (peers[peerUUID] && peers[peerUUID].connectionState !== 'connected') {
             updateStatus(`Connection attempt with ${peerUUID.substring(0,6)} timed out. Retrying...`, 'orange');
-            const isCurrentlyFriend = await isFriend(peerUUID); [cite: 1919, 1920]
+            const isCurrentlyFriend = await isFriend(peerUUID);
             closePeerConnection(peerUUID, true);
             if (isCurrentlyFriend && signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
-         
-                startPeerReconnect(peerUUID); [cite: 1920]
+                 startPeerReconnect(peerUUID);
             } else {
             }
         }
-        delete peerNegotiationTimers[peerUUID]; [cite: 1920, 1921]
+        delete peerNegotiationTimers[peerUUID];
     }, NEGOTIATION_TIMEOUT_MS);
 }
-function clearNegotiationTimeout(peerUUID) { [cite: 1921]
+function clearNegotiationTimeout(peerUUID) {
     if (peerNegotiationTimers[peerUUID]) {
-        clearTimeout(peerNegotiationTimers[peerUUID]); [cite: 1922]
+        clearTimeout(peerNegotiationTimers[peerUUID]);
         delete peerNegotiationTimers[peerUUID];
     }
-} [cite: 1922]
-async function createPeerConnection(peerUUID) { [cite: 1922]
+}
+async function createPeerConnection(peerUUID) {
   if (peers[peerUUID]) {
-    console.warn(`Closing existing PeerConnection for ${peerUUID}.`); [cite: 1922, 1923]
+    console.warn(`Closing existing PeerConnection for ${peerUUID}.`);
     closePeerConnection(peerUUID, true);
   }
-  clearNegotiationTimeout(peerUUID); [cite: 1923]
+  clearNegotiationTimeout(peerUUID);
   iceCandidateQueue[peerUUID] = [];
   try {
-    const peer = new RTCPeerConnection({ [cite: 1923, 1924]
+    const peer = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
-    peer.onicecandidate = event => { [cite: 1924]
+    peer.onicecandidate = event => {
       if (event.candidate) {
         sendSignalingMessage({
             type: 'ice-candidate',
             payload: { target: peerUUID, candidate: event.candidate }
-        }); [cite: 1925]
+        });
       } else {
-      } [cite: 1925, 1926]
+      }
     };
-    peer.ondatachannel = event => { [cite: 1926]
+    peer.ondatachannel = event => {
       const channel = event.channel;
       channel.binaryType = 'arraybuffer';
       setupDataChannelEvents(peerUUID, channel);
-    }; [cite: 1927]
-    peer.ontrack = (event) => { [cite: 1927]
+    };
+    peer.ontrack = (event) => {
       handleRemoteTrack(peerUUID, event.track, event.streams[0]);
     };
-    peer.onconnectionstatechange = async () => { [cite: 1928]
+    peer.onconnectionstatechange = async () => {
       switch (peer.connectionState) {
         case 'connected':
-          updateStatus(`Connected with ${peerUUID.substring(0,6)}!`, 'green'); [cite: 1928, 1929]
+          updateStatus(`Connected with ${peerUUID.substring(0,6)}!`, 'green');
           clearNegotiationTimeout(peerUUID);
-          if (peerReconnectInfo[peerUUID] && peerReconnectInfo[peerUUID].isReconnecting) { [cite: 1929, 1930]
+          if (peerReconnectInfo[peerUUID] && peerReconnectInfo[peerUUID].isReconnecting) {
             stopPeerReconnect(peerUUID);
           }
-          const connectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected'); [cite: 1930, 1931]
+          const connectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected');
           if (connectedPeers.length > 0 && (messageInputElement && !messageInputElement.disabled)) {
-          } else if (connectedPeers.length > 0) { [cite: 1931]
+          } else if (connectedPeers.length > 0) {
               setInteractionUiEnabled(true);
-              currentAppState = AppState.CONNECTED; [cite: 1932]
+              currentAppState = AppState.CONNECTED;
           }
-          break; [cite: 1932, 1933]
+          break;
         case 'disconnected':
-        case 'failed': [cite: 1933]
+        case 'failed':
           updateStatus(`Connection with ${peerUUID.substring(0,6)} ${peer.connectionState}`, 'orange');
-          clearNegotiationTimeout(peerUUID); [cite: 1934]
+          clearNegotiationTimeout(peerUUID);
           if (await isFriend(peerUUID) && (!peerReconnectInfo[peerUUID] || !peerReconnectInfo[peerUUID].isReconnecting)) {
-            if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) { [cite: 1934]
+            if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
                  startPeerReconnect(peerUUID);
-            } else { [cite: 1935]
-                 closePeerConnection(peerUUID); [cite: 1936]
+            } else {
+                 closePeerConnection(peerUUID);
             }
           }
-          const stillConnectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected'); [cite: 1936, 1937]
+          const stillConnectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected');
           if (stillConnectedPeers.length === 0 && currentAppState !== AppState.CONNECTING) {
-              setInteractionUiEnabled(false); [cite: 1937, 1938]
-              currentAppState = AppState.INITIAL; updateStatus('All peers disconnected.', 'orange');
+              setInteractionUiEnabled(false); currentAppState = AppState.INITIAL; updateStatus('All peers disconnected.', 'orange');
           }
-          break; [cite: 1938, 1939]
-        case 'closed': [cite: 1939]
+          break;
+        case 'closed':
           updateStatus(`Connection with ${peerUUID.substring(0,6)} closed.`, 'orange');
-          clearNegotiationTimeout(peerUUID); [cite: 1939]
-          stopPeerReconnect(peerUUID); [cite: 1940]
+          clearNegotiationTimeout(peerUUID);
+          stopPeerReconnect(peerUUID);
           if (peers[peerUUID]) {
-              closePeerConnection(peerUUID, true); [cite: 1940, 1941]
+              closePeerConnection(peerUUID, true);
           }
-          const stillConnectedPeersAfterClose = Object.values(peers).filter(p => p?.connectionState === 'connected'); [cite: 1941, 1942]
+          const stillConnectedPeersAfterClose = Object.values(peers).filter(p => p?.connectionState === 'connected');
           if (stillConnectedPeersAfterClose.length === 0 && currentAppState !== AppState.CONNECTING) {
-              setInteractionUiEnabled(false); [cite: 1942, 1943]
+              setInteractionUiEnabled(false);
               currentAppState = AppState.INITIAL;
-              updateStatus('All peers disconnected or connections closed.', 'orange'); [cite: 1943, 1944]
+              updateStatus('All peers disconnected or connections closed.', 'orange');
           }
-          break; [cite: 1944, 1945]
-        case 'connecting': [cite: 1945]
+          break;
+        case 'connecting':
           updateStatus(`Connecting with ${peerUUID.substring(0,6)}...`, 'orange');
-          break; [cite: 1946]
+          break;
         default:
-             updateStatus(`Connection state with ${peerUUID.substring(0,6)}: ${peer.connectionState}`, 'orange'); [cite: 1946, 1947]
+             updateStatus(`Connection state with ${peerUUID.substring(0,6)}: ${peer.connectionState}`, 'orange');
       }
     };
-    peers[peerUUID] = peer; [cite: 1947]
+    peers[peerUUID] = peer;
     return peer;
-  } catch (error) { [cite: 1948]
+  } catch (error) {
     updateStatus(`Connection setup error: ${error.message}`, 'red');
-    currentAppState = AppState.ERROR; [cite: 1948]
+    currentAppState = AppState.ERROR;
     return null;
   }
-} [cite: 1949]
-function setupDataChannelEvents(peerUUID, channel) { [cite: 1949]
+}
+function setupDataChannelEvents(peerUUID, channel) {
     if (!channel) return;
-    dataChannels[peerUUID] = channel; [cite: 1949, 1950]
+    dataChannels[peerUUID] = channel;
     channel.onmessage = (event) => handleDataChannelMessage(event, peerUUID);
-    channel.onopen = () => { [cite: 1950]
+    channel.onopen = () => {
         const openPeers = Object.entries(dataChannels)
                                 .filter(([uuid, dc]) => dc && dc.readyState === 'open')
-                                .map(([uuid, dc]) => uuid.substring(0,6)); [cite: 1951]
+                                .map(([uuid, dc]) => uuid.substring(0,6));
         if (openPeers.length > 0) {
-            setInteractionUiEnabled(true); [cite: 1951]
+            setInteractionUiEnabled(true);
             currentAppState = AppState.CONNECTED;
-            updateStatus(`Ready to chat/send files with: ${openPeers.join(', ')}!`, 'green'); [cite: 1952]
+            updateStatus(`Ready to chat/send files with: ${openPeers.join(', ')}!`, 'green');
         } else {
-            setInteractionUiEnabled(false); [cite: 1952, 1953]
+            setInteractionUiEnabled(false);
         }
     };
-    channel.onclose = () => { [cite: 1953]
-        delete dataChannels[peerUUID]; [cite: 1954]
+    channel.onclose = () => {
+        delete dataChannels[peerUUID];
         const openPeers = Object.entries(dataChannels)
                                 .filter(([uuid, dc]) => dc && dc.readyState === 'open')
-                                .map(([uuid, dc]) => uuid.substring(0,6)); [cite: 1954, 1955]
+                                .map(([uuid, dc]) => uuid.substring(0,6));
         if (openPeers.length === 0) {
-            updateStatus(`Data channel with ${peerUUID.substring(0,6)} closed. No active data channels.`, 'orange'); [cite: 1955]
-            setInteractionUiEnabled(false); [cite: 1956]
+            updateStatus(`Data channel with ${peerUUID.substring(0,6)} closed. No active data channels.`, 'orange');
+            setInteractionUiEnabled(false);
         } else {
-            updateStatus(`Data channel with ${peerUUID.substring(0,6)} closed. Still ready with: ${openPeers.join(', ')}!`, 'orange'); [cite: 1956, 1957]
+            updateStatus(`Data channel with ${peerUUID.substring(0,6)} closed. Still ready with: ${openPeers.join(', ')}!`, 'orange');
         }
     };
-    channel.onerror = (error) => { [cite: 1957, 1958]
+    channel.onerror = (error) => {
         updateStatus(`Data channel error: ${error}`, 'red');
-        closePeerConnection(peerUUID); [cite: 1958]
+        closePeerConnection(peerUUID);
     };
 }
-async function createOfferForPeer(peerUUID, isReconnectAttempt = false) { [cite: 1958, 1959]
+async function createOfferForPeer(peerUUID, isReconnectAttempt = false) {
     currentAppState = AppState.CONNECTING;
     const peer = await createPeerConnection(peerUUID);
-    if (!peer) return; [cite: 1959]
+    if (!peer) return;
     const offerSdp = await createOfferAndSetLocal(peerUUID);
-    if (offerSdp) { [cite: 1959, 1960]
+    if (offerSdp) {
         sendSignalingMessage({
             type: 'offer',
             payload: { target: peerUUID, sdp: offerSdp }
         });
-        setNegotiationTimeout(peerUUID); [cite: 1960]
+        setNegotiationTimeout(peerUUID);
     } else {
-        closePeerConnection(peerUUID); [cite: 1961]
+        closePeerConnection(peerUUID);
     }
 }
-async function createOfferAndSetLocal(peerUUID) { [cite: 1961]
+async function createOfferAndSetLocal(peerUUID) {
   const peer = peers[peerUUID];
-  if (!peer) { [cite: 1961, 1962]
+  if (!peer) {
       return null;
   }
   try {
-    const channel = peer.createDataChannel('cybernetcall-data'); [cite: 1962, 1963]
+    const channel = peer.createDataChannel('cybernetcall-data');
     channel.binaryType = 'arraybuffer';
     setupDataChannelEvents(peerUUID, channel);
-    if (localStream) { [cite: 1963]
+    if (localStream) {
         localStream.getTracks().forEach(track => {
             try {
                 peer.addTrack(track, localStream);
-            } catch (e) { } [cite: 1963, 1964]
+            } catch (e) { }
         });
     }
     const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer); [cite: 1964, 1965]
+    await peer.setLocalDescription(offer);
     return peer.localDescription;
   } catch (error) {
-    updateStatus(`Offer creation error for ${peerUUID}: ${error.message}`, 'red'); [cite: 1965, 1966]
+    updateStatus(`Offer creation error for ${peerUUID}: ${error.message}`, 'red');
     return null;
   }
-} [cite: 1966]
-async function handleOfferAndCreateAnswer(peerUUID, offerSdp) { [cite: 1966]
+}
+async function handleOfferAndCreateAnswer(peerUUID, offerSdp) {
   let peer = peers[peerUUID];
-  const isRenegotiation = !!peer; [cite: 1967]
+  const isRenegotiation = !!peer;
   if (!isRenegotiation) {
-    iceCandidateQueue[peerUUID] = []; [cite: 1967, 1968]
+    iceCandidateQueue[peerUUID] = [];
     peer = await createPeerConnection(peerUUID);
-    if (!peer) { [cite: 1968]
+    if (!peer) {
         return;
     }
-    const alreadyFriend = await isFriend(peerUUID); [cite: 1968, 1969]
+    const alreadyFriend = await isFriend(peerUUID);
     if (!alreadyFriend) {
-        await addFriend(peerUUID); [cite: 1969, 1970]
+        await addFriend(peerUUID);
     }
   }
   try {
     await peer.setRemoteDescription(new RTCSessionDescription(offerSdp));
-    await processIceCandidateQueue(peerUUID); [cite: 1970, 1971]
+    await processIceCandidateQueue(peerUUID);
     if (localStream) {
-        localStream.getTracks().forEach(track => { [cite: 1971]
+        localStream.getTracks().forEach(track => {
             try {
                 const senderExists = peer.getSenders().find(s => s.track === track);
-                if (!senderExists) { [cite: 1971, 1972]
+                if (!senderExists) {
                     peer.addTrack(track, localStream);
-             
                 }
-            } catch (e) { } [cite: 1972, 1973]
+            } catch (e) { }
         });
     }
-    const answer = await peer.createAnswer(); [cite: 1973]
+    const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
-    sendSignalingMessage({ [cite: 1974]
+    sendSignalingMessage({
         type: 'answer',
         payload: { target: peerUUID, sdp: peer.localDescription }
     });
-    setNegotiationTimeout(peerUUID); [cite: 1975]
+    setNegotiationTimeout(peerUUID);
   } catch (error) {
-    updateStatus(`Offer handling / Answer creation error for ${peerUUID}: ${error.message}`, 'red'); [cite: 1975, 1976]
+    updateStatus(`Offer handling / Answer creation error for ${peerUUID}: ${error.message}`, 'red');
     closePeerConnection(peerUUID);
   }
-} [cite: 1976]
-async function handleAnswer(peerUUID, answerSdp) { [cite: 1976, 1977]
+}
+async function handleAnswer(peerUUID, answerSdp) {
   const peer = peers[peerUUID];
-  if (!peer) { [cite: 1977]
+  if (!peer) {
        return null;
   }
-  const isRenegotiationAnswer = peer.signalingState === 'have-local-offer'; [cite: 1977, 1978]
+  const isRenegotiationAnswer = peer.signalingState === 'have-local-offer';
   try {
     await peer.setRemoteDescription(new RTCSessionDescription(answerSdp));
-    await processIceCandidateQueue(peerUUID); [cite: 1978, 1979]
+    await processIceCandidateQueue(peerUUID);
     return true;
   } catch (error) {
-    updateStatus(`Answer handling error for ${peerUUID}: ${error.message}`, 'red'); [cite: 1979, 1980]
+    updateStatus(`Answer handling error for ${peerUUID}: ${error.message}`, 'red');
     return false;
   }
-} [cite: 1980]
-async function handleIceCandidate(peerUUID, candidateData) { [cite: 1980, 1981]
+}
+async function handleIceCandidate(peerUUID, candidateData) {
     try {
-        const peer = peers[peerUUID]; [cite: 1981]
+        const peer = peers[peerUUID];
         if (!peer) {
-            if (!iceCandidateQueue[peerUUID]) { [cite: 1981, 1982]
+            if (!iceCandidateQueue[peerUUID]) {
                 iceCandidateQueue[peerUUID] = [];
             }
-            iceCandidateQueue[peerUUID].push(candidateData); [cite: 1982, 1983]
+            iceCandidateQueue[peerUUID].push(candidateData);
             return;
         }
-        if (candidateData) { [cite: 1983]
+        if (candidateData) {
             if (peer.remoteDescription) {
-                await peer.addIceCandidate(new RTCIceCandidate(candidateData)); [cite: 1983, 1984]
+                await peer.addIceCandidate(new RTCIceCandidate(candidateData));
             } else {
-                if (!iceCandidateQueue[peerUUID]) { [cite: 1984, 1985]
+                if (!iceCandidateQueue[peerUUID]) {
                     iceCandidateQueue[peerUUID] = [];
                 }
-                iceCandidateQueue[peerUUID].push(candidateData); [cite: 1985, 1986]
+                iceCandidateQueue[peerUUID].push(candidateData);
             }
         }
-    } catch (error) { [cite: 1986]
+    } catch (error) {
     }
 }
-async function processIceCandidateQueue(peerUUID) { [cite: 1986, 1969]
+async function processIceCandidateQueue(peerUUID) {
     const peer = peers[peerUUID];
-    if (peer && peer.remoteDescription && iceCandidateQueue[peerUUID]) { [cite: 1970]
+    if (peer && peer.remoteDescription && iceCandidateQueue[peerUUID]) {
         while (iceCandidateQueue[peerUUID].length > 0) {
-            const candidate = iceCandidateQueue[peerUUID].shift(); [cite: 1970]
+            const candidate = iceCandidateQueue[peerUUID].shift();
             try {
-                await peer.addIceCandidate(new RTCIceCandidate(candidate)); [cite: 1971]
-            } catch (e) { }
+                await peer.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (e) {
+            }
         }
     }
 }
-function resetConnection() { [cite: 1971]
+function resetConnection() {
     try {
         if (typeof Html5QrcodeScannerState !== 'undefined' && window.html5QrCodeScanner && window.html5QrCodeScanner.getState() === Html5QrcodeScannerState.SCANNING) {
-            window.html5QrCodeScanner.stop().catch(e => console.warn("Error stopping scanner during reset:", e)); [cite: 1971, 1972]
+            window.html5QrCodeScanner.stop().catch(e => console.warn("Error stopping scanner during reset:", e));
         } else if (window.html5QrCodeScanner) {
-            window.html5QrCodeScanner.clear().catch(e => console.warn("Error clearing scanner during reset:", e)); [cite: 1972, 1973]
+            window.html5QrCodeScanner.clear().catch(e => console.warn("Error clearing scanner during reset:", e));
         }
-    } catch(e) { console.warn("Error accessing scanner state during reset:", e); } [cite: 1973]
+    } catch(e) { console.warn("Error accessing scanner state during reset:", e); }
     if (signalingSocket) {
-        signalingSocket.onclose = null; [cite: 1973, 1974]
+        signalingSocket.onclose = null;
         signalingSocket.onerror = null;
         signalingSocket.onmessage = null;
         signalingSocket.onopen = null;
-        if (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING) { [cite: 1974]
+        if (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING) {
             signalingSocket.close(1000);
         }
-        signalingSocket = null; [cite: 1975]
+        signalingSocket = null;
     }
     Object.values(dataChannels).forEach(channel => {
         if (channel) {
@@ -1004,166 +849,190 @@ function resetConnection() { [cite: 1971]
             channel.onopen = null;
             channel.onclose = null;
             channel.onerror = null;
-            if (channel.readyState !== 'closed') { channel.close(); } [cite: 1975]
+            if (channel.readyState !== 'closed') {
+                channel.close();
+            }
         }
     });
-    dataChannels = {}; [cite: 1976]
+    dataChannels = {};
     Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID, true));
     peers = {};
     if (localStream) {
-        localStream.getTracks().forEach(track => track.stop()); [cite: 1976]
+        localStream.getTracks().forEach(track => track.stop());
         localStream = null;
         if(localVideoElement) localVideoElement.srcObject = null;
+        if(callButton) callButton.textContent = '📞';
+        if(videoButton) videoButton.textContent = '🎥';
     }
-    if(callButton) callButton.textContent = '📞';
-    if(videoButton) videoButton.textContent = '🎥';
-    if(remoteVideosContainer) remoteVideosContainer.innerHTML = '';
+    if (remoteVideosContainer) {
+        remoteVideosContainer.innerHTML = '';
+    } else if (remoteVideoElement) {
+        remoteVideoElement.srcObject = null;
+    }
     currentAppState = AppState.INITIAL;
+    receivedSize = {};
+    incomingFileInfo = {};
+    if (fileTransferStatusElement) fileTransferStatusElement.textContent = '';
+    currentCallerId = null;
+    if (incomingCallModal) incomingCallModal.style.display = 'none';
+    if(qrReaderElement) qrReaderElement.style.display = 'none';
+    if(startScanButton) startScanButton.disabled = false;
+    updateStatus('Ready. Add friends or wait for connection.', 'black');
     setInteractionUiEnabled(false);
-    updateStatus('Connection reset.', 'orange');
-    if (wsReconnectTimer) {
-        clearTimeout(wsReconnectTimer);
-        wsReconnectTimer = null;
-    }
-    wsReconnectAttempts = 0;
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
     isAttemptingReconnect = false;
-    stopAutoConnectFriendsTimer();
+    if(messageAreaElement) messageAreaElement.innerHTML = '';
+    if(postAreaElement) postAreaElement.innerHTML = '';
 }
-function closePeerConnection(peerUUID, resetUI = false) { [cite: 1977]
+function closePeerConnection(peerUUID, silent = false) {
+    clearNegotiationTimeout(peerUUID);
+    stopPeerReconnect(peerUUID);
     const peer = peers[peerUUID];
     if (peer) {
         peer.onicecandidate = null;
         peer.ondatachannel = null;
         peer.ontrack = null;
+        const tempOnConnectionStateChange = peer.onconnectionstatechange;
         peer.onconnectionstatechange = null;
-        peer.close();
+        if (peer.signalingState !== 'closed') {
+            peer.close();
+        }
         delete peers[peerUUID];
+        delete iceCandidateQueue[peerUUID];
     }
-    if (dataChannels[peerUUID]) {
-        dataChannels[peerUUID].onmessage = null;
-        dataChannels[peerUUID].onopen = null;
-        dataChannels[peerUUID].onclose = null;
-        dataChannels[peerUUID].onerror = null;
-        dataChannels[peerUUID].close();
+    const channel = dataChannels[peerUUID];
+    if (channel) {
+        if (channel.readyState !== 'closed') {
+            channel.close();
+        }
         delete dataChannels[peerUUID];
     }
-    delete iceCandidateQueue[peerUUID];
-    delete receivedSize[peerUUID];
-    delete incomingFileInfo[peerUUID];
-    delete lastReceivedFileChunkMeta[peerUUID];
-    stopPeerReconnect(peerUUID);
-    clearNegotiationTimeout(peerUUID);
-    removeRemoteVideoElement(peerUUID);
-    if (resetUI) {
+    const videoElement = document.getElementById(`remoteVideo-${peerUUID}`);
+    if (videoElement) {
+        videoElement.remove();
+    }
+    if (!silent) {
         const connectedPeersCount = Object.values(peers).filter(p => p?.connectionState === 'connected').length;
-        if (connectedPeersCount === 0 && currentAppState !== AppState.CONNECTING) { [cite: 1978]
-            setInteractionUiEnabled(false);
-            currentAppState = AppState.INITIAL; [cite: 1979]
-            updateStatus(`Connection with ${peerUUID.substring(0,6)} closed. No active connections.`, 'orange');
-        } else if (connectedPeersCount > 0) { [cite: 1979, 1980]
+        if (connectedPeersCount === 0 && currentAppState !== AppState.CONNECTING) {
+             setInteractionUiEnabled(false);
+             currentAppState = AppState.INITIAL;
+             updateStatus(`Connection with ${peerUUID.substring(0,6)} closed. No active connections.`, 'orange');
+        } else if (connectedPeersCount > 0) {
             updateStatus(`Connection with ${peerUUID.substring(0,6)} closed. Still connected to others.`, 'orange');
         }
     }
 }
-function handleDataChannelMessage(event, senderUUID) { [cite: 1980]
-    if (event.data instanceof ArrayBuffer) {
-        if (lastReceivedFileChunkMeta[senderUUID]) {
-            const meta = lastReceivedFileChunkMeta[senderUUID]; [cite: 1980, 1981]
-            processFileChunk(meta, event.data);
-            lastReceivedFileChunkMeta[senderUUID] = null; [cite: 1981]
-        }
-    } else if (typeof event.data === 'string') {
-        processTextMessage(event.data, senderUUID); [cite: 1981, 1982]
-    } else {
+function handleDataChannelMessage(event, senderUUID) {
+  if (event.data instanceof ArrayBuffer) {
+    if (lastReceivedFileChunkMeta[senderUUID]) {
+        const meta = lastReceivedFileChunkMeta[senderUUID];
+        processFileChunk(meta, event.data);
+        lastReceivedFileChunkMeta[senderUUID] = null;
     }
+  } else if (typeof event.data === 'string') {
+    processTextMessage(event.data, senderUUID);
+  } else {
+  }
 }
-async function processTextMessage(dataString, senderUUID) { [cite: 1982]
+async function processTextMessage(dataString, senderUUID) {
     try {
-        const message = JSON.parse(dataString); [cite: 1982, 1983]
+        const message = JSON.parse(dataString);
         switch (message.type) {
             case 'post':
                 message.sender = message.sender || senderUUID;
                 await savePost(message);
-                displayPost(message, true); [cite: 1983, 1984]
+                displayPost(message, true);
                 break;
             case 'direct-message':
                 message.sender = message.sender || senderUUID;
-                displayDirectMessage(message, false, senderUUID); [cite: 1984]
+                displayDirectMessage(message, false, senderUUID);
                 break;
             case 'delete-post':
-                const postElement = document.getElementById(`post-${message.postId}`); [cite: 1984, 1985]
+                const postElement = document.getElementById(`post-${message.postId}`);
                 if (postElement) {
                     postElement.remove();
                 }
                 await deletePostFromDb(message.postId);
                 break;
             case 'file-metadata':
-                incomingFileInfo[message.fileId] = { name: message.name, size: message.size, type: message.fileType }; [cite: 1985, 1986]
+                incomingFileInfo[message.fileId] = {
+                    name: message.name,
+                    size: message.size,
+                    type: message.fileType
+                };
                 receivedSize[message.fileId] = 0;
                 if (fileTransferStatusElement) {
-                    fileTransferStatusElement.textContent = `Receiving ${message.name}... 0%`; [cite: 1986]
+                    fileTransferStatusElement.textContent = `Receiving ${message.name}... 0%`;
                 }
                 break;
             case 'file-chunk':
-                lastReceivedFileChunkMeta[senderUUID] = { ...message, senderUUID }; [cite: 1987]
+                lastReceivedFileChunkMeta[senderUUID] = { ...message, senderUUID };
                 break;
             default:
                 if (!message.type && message.content && message.id) {
-                    await savePost(message); [cite: 1987, 1988]
-                    displayPost(message, true);
+                     await savePost(message);
+                     displayPost(message, true);
                 }
         }
-    } catch (error) { [cite: 1988]
+    } catch (error) {
     }
 }
-async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) { [cite: 1988]
-    const { fileId, index, last, senderUUID } = chunkMeta;
-    if (!dbPromise) {
-        updateStatus(`DB not ready. Cannot save chunk for ${fileId.substring(0, 6)}.`, 'red');
+async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) {
+    const { fileId, index: chunkIndex, last: isLast, senderUUID } = chunkMeta;
+    if (!incomingFileInfo[fileId]) {
+      console.error(`Received chunk data for unknown file transfer (no metadata): ${fileId} from ${senderUUID}`);
         return;
     }
-    const db = await dbPromise;
+    let db;
     try {
-        const fileInfo = incomingFileInfo[fileId];
-        if (!fileInfo) throw new Error(`Metadata not found for file ${fileId}`);
-        const dataLength = chunkDataAsArrayBuffer.byteLength;
-        receivedSize[fileId] += dataLength;
-        const progress = Math.round((receivedSize[fileId] / fileInfo.size) * 100);
-        if (fileTransferStatusElement) fileTransferStatusElement.textContent = `Receiving ${fileInfo.name}... ${progress}%`;
-
-        // チャンクをDBに保存
+        if (!(chunkDataAsArrayBuffer instanceof ArrayBuffer)) {
+            await cleanupFileTransferData(fileId, null);
+            return;
+        }
+        if (!dbPromise) {
+            if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`DB Error for ${incomingFileInfo[fileId]?.name || 'file'}`);
+            delete incomingFileInfo[fileId];
+            if (receivedSize) delete receivedSize[fileId];
+            return;
+        }
+        db = await dbPromise;
         const tx = db.transaction('fileChunks', 'readwrite');
-        await tx.store.put({ fileId: fileId, chunkIndex: index, data: chunkDataAsArrayBuffer });
+        await tx.store.put({ fileId: fileId, chunkIndex: chunkIndex, data: chunkDataAsArrayBuffer });
         await tx.done;
-
-        if (last) {
-            updateStatus(`File ${fileInfo.name} transfer complete. Assembling...`, 'blue');
-            // ファイルの再構成
-            const assembleTx = db.transaction('fileChunks', 'readonly');
-            const allChunksForFileFromDb = await assembleTx.objectStore('fileChunks').index('by_fileId').getAll(fileId);
-            const expectedChunks = Math.ceil(fileInfo.size / CHUNK_SIZE);
-
-            if (allChunksForFileFromDb.length !== expectedChunks) {
-                updateStatus(`Error receiving ${fileInfo.name}: Expected ${expectedChunks} chunks, got ${allChunksForFileFromDb.length} from DB. Cannot assemble.`, 'red');
-                if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error receiving ${fileInfo.name} (missing chunks from DB)`);
+        const readTxForSize = db.transaction('fileChunks', 'readonly');
+        const allChunksForFileFromDb = await readTxForSize.objectStore('fileChunks').index('by_fileId').getAll(fileId);
+        await readTxForSize.done;
+        let actualReceivedSize = 0;
+        allChunksForFileFromDb.forEach(c => actualReceivedSize += c.data.byteLength);
+        receivedSize[fileId] = actualReceivedSize;
+        const progress = Math.round((receivedSize[fileId] / incomingFileInfo[fileId].size) * 100);
+        if (fileTransferStatusElement) {
+          fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Receiving ${incomingFileInfo[fileId].name}... ${progress}%`);
+        }
+        if (isLast) {
+            if (receivedSize[fileId] !== incomingFileInfo[fileId].size) {
+                if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error assembling ${incomingFileInfo[fileId].name} (final size error)`);
                 await cleanupFileTransferData(fileId, db);
                 return;
             }
-
-            // チャンクをインデックス順にソートしてデータを取得
             allChunksForFileFromDb.sort((a, b) => a.chunkIndex - b.chunkIndex);
+            if (allChunksForFileFromDb.length !== chunkIndex + 1) {
+                 console.warn(`Missing chunks for file ${fileId}. Expected ${chunkIndex + 1}, got ${allChunksForFileFromDb.length} from DB. Cannot assemble.`);
+                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error receiving ${incomingFileInfo[fileId].name} (missing chunks from DB)`);
+                 await cleanupFileTransferData(fileId, db);
+                 return;
+            }
             const orderedChunkData = allChunksForFileFromDb.map(c => c.data);
-            const fileBlob = new Blob(orderedChunkData, { type: fileInfo.type });
-
+            const fileBlob = new Blob(orderedChunkData, { type: incomingFileInfo[fileId].type });
             const downloadLink = document.createElement('a');
             downloadLink.href = URL.createObjectURL(fileBlob);
-            downloadLink.download = fileInfo.name;
-            downloadLink.textContent = `Download ${fileInfo.name}`;
+            downloadLink.download = incomingFileInfo[fileId].name;
+            downloadLink.textContent = `Download ${incomingFileInfo[fileId].name}`;
             downloadLink.style.display = 'block';
             downloadLink.style.marginTop = '5px';
-
             if (fileTransferStatusElement) {
-                fileTransferStatusElement.innerHTML = '';
+              fileTransferStatusElement.innerHTML = '';
                 fileTransferStatusElement.appendChild(downloadLink);
             } else {
                 messageAreaElement.appendChild(downloadLink);
@@ -1171,382 +1040,663 @@ async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) { [cite: 1988
             await cleanupFileTransferData(fileId, db, true);
         }
     } catch (error) {
-        updateStatus(`Error processing chunk for ${incomingFileInfo[fileId]?.name || 'unknown file'}: ${error.message}`, 'red');
-        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error processing chunk for ${incomingFileInfo[fileId]?.name || 'unknown file'}`);
-        await cleanupFileTransferData(fileId, db);
-    }
+    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error processing chunk for ${incomingFileInfo[fileId]?.name || 'unknown file'}`);
+    await cleanupFileTransferData(fileId, db);
+  }
 }
-function broadcastMessage(messageString) { [cite: 1988]
+function broadcastMessage(messageString) {
     let sentToAtLeastOne = false;
-    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open'); [cite: 1989]
+    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open');
     if (openChannels.length > 0) {
         openChannels.forEach(([uuid, dc]) => {
             try {
                 dc.send(messageString);
                 sentToAtLeastOne = true;
-            } catch (error) { console.error(`Error sending message to ${uuid}:`, error); } [cite: 1989, 1990]
+            } catch (error) {
+                console.error(`Error sending message to ${uuid}:`, error);
+            }
         });
     } else {
-        console.warn("Cannot broadcast message: No open DataChannels."); [cite: 1990]
-    }
-    return sentToAtLeastOne; [cite: 1991]
-}
-async function cleanupFileTransferData(fileId, db, transferComplete = false) { [cite: 1991]
-    if (db) {
-        try {
-            const deleteTx = db.transaction('fileChunks', 'readwrite'); [cite: 1992]
-            const allChunksForFile = await deleteTx.objectStore('fileChunks').index('by_fileId').getAll(fileId);
-            allChunksForFile.forEach(chunk => deleteTx.objectStore('fileChunks').delete([chunk.fileId, chunk.chunkIndex]));
-            await deleteTx.done;
-        } catch (e) { console.error("DB cleanup failed:", e); }
-    }
-    delete incomingFileInfo[fileId];
-    delete receivedSize[fileId];
-    // senderUUIDごとのlastReceivedFileChunkMetaは、次に来るチャンクのメタデータなのでクリア不要だが、念のため関連データは削除
-    Object.keys(lastReceivedFileChunkMeta).forEach(senderUUID => {
-        if (lastReceivedFileChunkMeta[senderUUID]?.fileId === fileId) {
-            delete lastReceivedFileChunkMeta[senderUUID];
-        }
-    });
-}
-function broadcastBinaryData(chunkDataAsArrayBuffer) { [cite: 1992]
-    let sentToAtLeastOne = false;
-    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open' && dc.bufferedAmount === 0);
-    if (openChannels.length > 0) {
-        openChannels.forEach(([uuid, dc]) => {
-            try {
-                dc.send(chunkDataAsArrayBuffer);
-                sentToAtLeastOne = true;
-            } catch (error) { console.error(`Error sending binary data to ${uuid}:`, error); }
-        });
-    } else {
-        console.warn("Cannot broadcast binary data: No open DataChannels or bufferedAmount > 0.");
+        console.warn("Cannot broadcast message: No open DataChannels.");
     }
     return sentToAtLeastOne;
 }
-function displayDirectMessage(message, isOutgoing, senderUUID = null) { [cite: 1993]
-    if (!messageAreaElement) return;
-    const div = document.createElement('div');
-    div.className = isOutgoing ? 'message outgoing' : 'message incoming'; [cite: 1994]
-    let senderName = 'You';
-    if (!isOutgoing) {
-        senderName = `Peer (${senderUUID ? senderUUID.substring(0, 6) : 'Unknown'})`;
-    } else if (message.sender) { [cite: 1994]
-        senderName = `Peer (${message.sender.substring(0, 6)})`;
+async function cleanupFileTransferData(fileId, db, transferComplete = false) {
+    if (db) {
+        try {
+            const deleteTx = db.transaction('fileChunks', 'readwrite');
+            const allChunksForFile = await deleteTx.objectStore('fileChunks').index('by_fileId').getAllKeys(fileId);
+            for (const key of allChunksForFile) {
+                 await deleteTx.objectStore('fileChunks').delete(key);
+            }
+            await deleteTx.done;
+        } catch (dbError) {
+            console.error(`[File Chunk DB] Error deleting chunks for file ${fileId}:`, dbError);
+        }
     }
-    const linkedContent = linkify(message.content); [cite: 1994, 1995]
-    div.innerHTML = DOMPurify.sanitize(`<strong>${senderName}:</strong> ${linkedContent}`);
-    messageAreaElement.appendChild(div);
-    messageAreaElement.scrollTop = messageAreaElement.scrollHeight; [cite: 1995]
+    delete incomingFileInfo[fileId];
+    if (receivedSize) delete receivedSize[fileId];
 }
-async function handleSendPost() { [cite: 1995]
-    const input = postInputElement;
-    const content = input?.value?.trim(); [cite: 1996]
+function broadcastBinaryData(dataBuffer) {
+    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open');
+    if (openChannels.length > 0) {
+        openChannels.forEach(([uuid, dc]) => {
+            try {
+                dc.send(dataBuffer);
+            } catch (error) {
+                console.error(`Error sending binary data to ${uuid}:`, error);
+            }
+        });
+        return true;
+    } else {
+        console.warn("Cannot broadcast binary data: No open DataChannels.");
+        return false;
+    }
+}
+function handleSendMessage() {
+    const input = messageInputElement;
+    const content = input?.value?.trim();
     if (content) {
-        const post = {
-            type: 'post',
-            id: generateUUID(),
+        const message = {
+            type: 'direct-message',
             content: content,
-            sender: myDeviceId, [cite: 1996]
+            sender: myDeviceId,
             timestamp: new Date().toISOString()
         };
-        await savePost(post); [cite: 1997]
-        displayPost(post, true);
-        const postString = JSON.stringify(post);
-        if (!broadcastMessage(postString)) {
-            alert("Not connected. Post saved locally only."); [cite: 1998]
+        const messageString = JSON.stringify(message);
+        if (broadcastMessage(messageString)) {
+            displayDirectMessage(message, true);
+            if(input) input.value = '';
+        } else {
+            alert(`Not connected to any peers. Please wait or rejoin.`);
         }
-        if(input) input.value = '';
     }
 }
-function handleSendFile() { [cite: 1998]
+function displayDirectMessage(message, isOwnMessage = false, senderUUID = null) {
+    if (!messageAreaElement) return;
+    const div = document.createElement('div');
+    div.classList.add('message', isOwnMessage ? 'own-message' : 'peer-message');
+    let senderName = 'Unknown';
+    if (isOwnMessage) {
+        senderName = 'You';
+    } else if (senderUUID) {
+        senderName = `Peer (${senderUUID.substring(0, 6)})`;
+    } else if (message.sender) {
+        senderName = `Peer (${message.sender.substring(0, 6)})`;
+    }
+    const linkedContent = linkify(message.content);
+    div.innerHTML = DOMPurify.sanitize(`<strong>${senderName}:</strong> ${linkedContent}`);
+    messageAreaElement.appendChild(div);
+    messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
+}
+async function handleSendPost() {
+  const input = postInputElement;
+  const content = input?.value?.trim();
+  if (content) {
+    const post = {
+      type: 'post',
+      id: generateUUID(),
+      content: content,
+      sender: myDeviceId,
+      timestamp: new Date().toISOString()
+    };
+    await savePost(post);
+    displayPost(post, true);
+    const postString = JSON.stringify(post);
+    if (!broadcastMessage(postString)) {
+        alert("Not connected. Post saved locally only.");
+    }
+    if(input) input.value = '';
+  }
+}
+function handleSendFile() {
     if (!fileInputElement || !fileInputElement.files || fileInputElement.files.length === 0) {
-        alert("Please select a file."); [cite: 1999]
+        alert("Please select a file.");
         return;
     }
-    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open'); [cite: 1999, 2000]
+    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open');
     if (openChannels.length === 0) {
         console.warn("Send file clicked but no open data channels.");
-        alert("Not connected to any peers to send the file."); [cite: 2000]
+        alert("Not connected to any peers to send the file.");
         return;
     }
     const file = fileInputElement.files[0];
-    const snapshottedFileSize = file.size; [cite: 2001]
+    const snapshottedFileSize = file.size;
     const fileId = generateUUID();
-    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sending ${file.name}... 0%`); [cite: 2001, 2002]
+    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sending ${file.name}... 0%`);
     sendFileButton.disabled = true;
     const metadata = {
         type: 'file-metadata',
         fileId: fileId,
         name: file.name,
         size: snapshottedFileSize,
-        fileType: file.type [cite: 2002]
+        fileType: file.type
     };
-    const metadataString = JSON.stringify(metadata); [cite: 2003]
+    const metadataString = JSON.stringify(metadata);
     if (!broadcastMessage(metadataString)) {
         alert("Failed to send file metadata to any peer.");
-        sendFileButton.disabled = false; [cite: 2003, 2004]
+        sendFileButton.disabled = false;
         return;
     }
-    fileReader = new FileReader(); [cite: 2004]
+    fileReader = new FileReader();
     let offset = 0;
     let chunkIndex = 0;
-    const readSlice = (o) => { [cite: 2005]
-        const slice = file.slice(o, o + CHUNK_SIZE);
-        fileReader.readAsArrayBuffer(slice);
-    };
-    fileReader.onload = async (e) => { [cite: 2006]
-        const chunkDataAsArrayBuffer = e.target.result;
-        const currentFileId = fileId;
-        const originalFileName = file.name;
-        const originalFileSizeInLogic = snapshottedFileSize;
-        const currentChunkIndex = chunkIndex;
-        const currentOffset = offset;
-
-        const sendFileChunk = async (chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount = 0) => {
-            try {
-                const chunkMetaMessage = {
-                    type: 'file-chunk',
-                    fileId: currentFileId,
-                    index: currentChunkIndex,
-                    last: ((currentOffset + chunkDataAsArrayBuffer.byteLength) >= originalFileSizeInLogic)
-                }; [cite: 2007]
-                const metaString = JSON.stringify(chunkMetaMessage);
-                if (!broadcastMessage(metaString)) { [cite: 2007, 2008]
-                    if (retryCount < 3) throw new Error(`Failed to send chunk meta ${currentChunkIndex} to any peer.`);
-                    else { console.error(`Failed to send chunk meta ${currentChunkIndex} after multiple retries.`); [cite: 2008]
-                    }
-                }
-                setTimeout(() => {
-                    if (!broadcastBinaryData(chunkDataAsArrayBuffer)) { [cite: 2008, 2009]
-                        if (retryCount < 3) throw new Error(`Failed to send chunk data ${currentChunkIndex} to any peer.`);
-                        else { console.error(`Failed to send chunk data ${currentChunkIndex} after multiple retries.`); } [cite: 2009]
-                    }
-                    const newOffset = currentOffset + chunkDataAsArrayBuffer.byteLength;
-                    const progress = Math.round((newOffset / originalFileSizeInLogic) * 100);
-                    if (fileTransferStatusElement) fileTransferStatusElement.textContent = `Sending ${originalFileName}... ${progress}%`;
-                    if (newOffset < originalFileSizeInLogic) {
-                        offset = newOffset;
-                        chunkIndex++;
-                        setTimeout(() => readSlice(newOffset), 0);
-                    } else { [cite: 2010]
-                        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sent ${originalFileName}`);
-                        if(fileInputElement) fileInputElement.value = ''; [cite: 2010]
-                        sendFileButton.disabled = false;
-                    }
-                }, 10);
-            } catch (error) { [cite: 2011]
-                console.error(`Error sending chunk ${currentChunkIndex}:`, error);
-                if (retryCount < 3) { [cite: 2011]
-                    setTimeout(() => sendFileChunk(chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount + 1), 1000 * (retryCount + 1));
-                } else { [cite: 2012]
-                    alert(`Failed to send chunk ${currentChunkIndex} after multiple retries.`);
-                    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('Chunk send error'); [cite: 2012]
-                    sendFileButton.disabled = false;
-                }
-            }
-        };
-
-        await sendFileChunk(chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset);
-    };
-
-    fileReader.onerror = (e) => {
-        updateStatus(`FileReader error: ${e.target.error}`, 'red');
+    fileReader.addEventListener('error', error => {
+        console.error('FileReader error:', error);
+        alert('File read error occurred.');
+        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('File read error');
         sendFileButton.disabled = false;
+    });
+    fileReader.addEventListener('abort', event => {
+        console.log('FileReader abort:', event);
+        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('File send aborted');
+        sendFileButton.disabled = false;
+    });
+    fileReader.addEventListener('load', e => {
+        const chunkArrayBuffer = e.target.result;
+        if (openChannels.length > 0) {
+            const firstChannel = openChannels[0][1];
+            const bufferedAmount = firstChannel.bufferedAmount || 0;
+            if (bufferedAmount > CHUNK_SIZE * 16) {
+                setTimeout(() => {
+                    sendFileChunk(chunkArrayBuffer, file.name, snapshottedFileSize, fileId, chunkIndex, offset);
+                }, 200);
+                return;
+            }
+        } else {
+            console.warn("No open channels to send file chunk.");
+            if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('Connection lost during send');
+            sendFileButton.disabled = false;
+            return;
+        }
+        sendFileChunk(chunkArrayBuffer, file.name, snapshottedFileSize, fileId, chunkIndex, offset);
+    });
+    const readSlice = o => {
+        try {
+            const end = Math.min(o + CHUNK_SIZE, snapshottedFileSize);
+            const slice = file.slice(o, end);
+            fileReader.readAsArrayBuffer(slice);
+        } catch (readError) {
+             console.error('Error reading file slice:', readError);
+             alert('Failed to read file slice.');
+             if (fileTransferStatusElement) fileTransferStatusElement.textContent = 'File slice error';
+             sendFileButton.disabled = false;
+        }
     };
-
+    const sendFileChunk = async (chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount = 0) => {
+         try {
+            const chunkMetaMessage = {
+                 type: 'file-chunk',
+                 fileId: currentFileId,
+                 index: currentChunkIndex,
+                 last: ((currentOffset + chunkDataAsArrayBuffer.byteLength) >= originalFileSizeInLogic)
+             };
+             const metaString = JSON.stringify(chunkMetaMessage);
+             if (!broadcastMessage(metaString)) {
+                 if (retryCount < 3) throw new Error(`Failed to send chunk meta ${currentChunkIndex} to any peer.`);
+                 else {
+                    console.error(`Failed to send chunk meta ${currentChunkIndex} after multiple retries.`);
+                 }
+             }
+             setTimeout(() => {
+                if (!broadcastBinaryData(chunkDataAsArrayBuffer)) {
+                    if (retryCount < 3) throw new Error(`Failed to send chunk data ${currentChunkIndex} to any peer.`);
+                 else {
+                    console.error(`Failed to send chunk data ${currentChunkIndex} after multiple retries.`);
+                 }
+             }
+             const newOffset = currentOffset + chunkDataAsArrayBuffer.byteLength;
+             const progress = Math.round((newOffset / originalFileSizeInLogic) * 100);
+             if (fileTransferStatusElement) fileTransferStatusElement.textContent = `Sending ${originalFileName}... ${progress}%`;
+             if (newOffset < originalFileSizeInLogic) {
+                offset = newOffset;
+                 chunkIndex++;
+                 setTimeout(() => readSlice(newOffset), 0);
+             } else {
+                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sent ${originalFileName}`);
+                 if(fileInputElement) fileInputElement.value = '';
+                 sendFileButton.disabled = false;
+             }
+            }, 10);
+        } catch (error) {
+             console.error(`Error sending chunk ${currentChunkIndex}:`, error);
+             if (retryCount < 3) {
+                 setTimeout(() => sendFileChunk(chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount + 1), 1000 * (retryCount + 1));
+             } else {
+                 alert(`Failed to send chunk ${currentChunkIndex} after multiple retries.`);
+                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('Chunk send error');
+                 await cleanupFileTransferData(currentFileId, await dbPromise);
+                 sendFileButton.disabled = false;
+             }
+         }
+    }
     readSlice(0);
 }
-function handleCallClick() {
-    if (localStream) {
-        // ... (Call termination logic) [cite: 2013, 2014, 2015]
+async function toggleVideoCall() {
+  if (currentAppState !== AppState.CONNECTED && currentAppState !== AppState.CONNECTING && !Object.values(peers).some(p => p && p.connectionState === 'connected')) {
+        console.warn("Call button clicked but not connected.");
+        alert("Please connect to a peer first.");
+        return;
+    }
+    if (!localStream) {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = false;
+            }
+            if (localVideoElement) localVideoElement.srcObject = localStream;
+            const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
+                if (peer) {
+                    localStream.getTracks().forEach(track => {
+                        try {
+                            if (peer.addTrack) {
+                                const sender = peer.addTrack(track, localStream);
+                            } else { console.warn(`peer.addTrack is not supported for ${peerUUID}.`); }
+                        } catch (e) { console.error(`Error adding track to ${peerUUID}:`, e); }
+                    });
+                    await createAndSendOfferForRenegotiation(peerUUID, peer);
+                }
+            });
+            await Promise.all(renegotiationPromises);
+            if(videoButton) videoButton.textContent = '🚫';
+            if(callButton) callButton.textContent = 'End Call';
+        } catch (error) {
+            alert(`Media access error: ${error.message}`);
+            localStream = null;
+        }
     } else {
-        // ... (Call initiation logic)
+        localStream.getTracks().forEach(track => track.stop());
+        const tracksToRemove = localStream.getTracks();
+        localStream = null;
+        const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
+            if (peer) {
+                peer.getSenders().forEach(sender => {
+                    if (sender && sender.track && tracksToRemove.includes(sender.track)) {
+                        try {
+                            if (peer.removeTrack) {
+                                peer.removeTrack(sender);
+                            } else { console.warn(`peer.removeTrack is not supported for ${peerUUID}.`); }
+                        } catch (e) { console.error(`Error removing track from ${peerUUID}:`, e); }
+                    }
+                });
+                await createAndSendOfferForRenegotiation(peerUUID, peer);
+            }
+        });
+        await Promise.all(renegotiationPromises);
+        if(localVideoElement) localVideoElement.srcObject = null;
+        if(callButton) callButton.textContent = '📞';
+        if(videoButton) videoButton.textContent = '🎥';
     }
 }
-function handleVideoClick() {
-    // ... (Toggle local video logic) [cite: 2016]
+async function createAndSendOfferForRenegotiation(peerUUID, peer) {
+    if (!peer || peer.connectionState !== 'connected') {
+        console.warn(`Cannot renegotiate with ${peerUUID}, connection not established.`);
+        return;
+    }
+    try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        sendSignalingMessage({
+            type: 'offer',
+            payload: { target: peerUUID, sdp: peer.localDescription }
+        });
+        setNegotiationTimeout(peerUUID);
+    } catch (error) {
+        console.error(`Error during renegotiation offer for ${peerUUID}:`, error);
+    }
+}
+function toggleLocalVideo() {
+    if (localStream) {
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled;
+            if(videoButton) videoButton.textContent = videoTrack.enabled ? '🎥' : '🚫';
+        }
+      } else {
+      }
 }
 function handleRemoteTrack(peerUUID, track, stream) {
-    // ... (Handle remote video logic)
+    if (!remoteVideosContainer) {
+        console.warn("Remote videos container not found.");
+        return;
+    }
+    let videoElement = document.getElementById(`remoteVideo-${peerUUID}`);
+    if (!videoElement) {
+        console.log(`Creating video element for ${peerUUID}`);
+        videoElement = document.createElement('video');
+        videoElement.id = `remoteVideo-${peerUUID}`;
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+        remoteVideosContainer.appendChild(videoElement);
+    }
+    if (!videoElement.srcObject && stream) {
+        videoElement.srcObject = stream;
+    } else if (videoElement.srcObject) {
+        if (!videoElement.srcObject.getTrackById(track.id)) {
+            videoElement.srcObject.addTrack(track);
+        }
+    } else {
+        console.warn(`Could not set srcObject for ${peerUUID} - no stream provided?`);
+    }
 }
-function removeRemoteVideoElement(peerUUID) {
-    // ... (Remove remote video element logic)
+function updateQrCodeWithValue(value) {
+    if (!qrElement) {
+        console.warn("QR element not available for update.");
+        return;
+    }
+    if (!value || typeof value !== 'string' || !value.includes('?id=')) {
+        console.warn("Invalid or no value provided to update QR code. Value:", value);
+        if (qrElement) {
+            qrElement.innerHTML = DOMPurify.sanitize("Your ID is not ready yet or invalid. Please wait or refresh.");
+            qrElement.style.display = 'block';
+        }
+        return;
+    }
+    const size = Math.min(window.innerWidth * 0.7, 250);
+    if (typeof QRious !== 'undefined') {
+        try {
+          new QRious({ element: qrElement, value: value, size: size, level: 'L' });
+        } catch (e) {
+             console.error("QRious error:", e);
+             qrElement.innerHTML = DOMPurify.sanitize("QR Code Generation Error");
+        }
+    } else {
+        console.error("QRious not loaded.");
+        setTimeout(() => updateQrCodeWithValue(value), 500);
+    }
 }
-function renderRemoteVideos() {
-    // ... (Render remote videos logic)
-}
-function handleScanButtonClick() {
-    // ... (QR code scanner logic)
+function handleStartScanClick() {
+    if (!window.html5QrCodeScanner || window.html5QrCodeScanner.getState() !== 2 ) {
+        startQrScanner();
+    } else {
+        console.warn("Scan button clicked but already scanning or scanner not ready.");
+    }
 }
 function startQrScanner() {
-    // ... (QR code scanner logic)
+    if (window.html5QrCodeScanner && window.html5QrCodeScanner.getState() === 2 ) {
+        return;
+    }
+    if (!qrReaderElement) {
+        console.warn("QR Reader element not available for start.");
+        return;
+    }
+    if(startScanButton) startScanButton.disabled = true;
+    qrReaderElement.style.display = 'block';
+    if (typeof Html5Qrcode !== 'undefined') {
+        try {
+            if (window.html5QrCodeScanner && typeof window.html5QrCodeScanner.getState === 'function') {
+                 const state = window.html5QrCodeScanner.getState();
+                 if (state === 2 || state === 1 ) {
+                     window.html5QrCodeScanner.stop().catch(e => console.warn("Ignoring error stopping previous scanner:", e));
+                 }
+            } else if (window.html5QrCodeScanner && typeof window.html5QrCodeScanner.clear === 'function') {
+                window.html5QrCodeScanner.clear().catch(e => console.warn("Ignoring error clearing previous scanner:", e));
+            }
+        } catch (e) { console.warn("Error accessing previous scanner state:", e); }
+        try {
+            window.html5QrCodeScanner = new Html5Qrcode("qr-reader");
+        } catch (e) {
+            console.error("Error creating Html5Qrcode instance:", e);
+            updateStatus(`QR Reader initialization error: ${e.message}`, 'red');
+            if(qrReaderElement) qrReaderElement.style.display = 'none';
+            if(startScanButton) startScanButton.disabled = false;
+            return;
+        }
+        const qrCodeSuccessCallback = (decodedText, decodedResult) => {
+            updateStatus('QR Scan successful. Processing...', 'blue');
+            window.html5QrCodeScanner.stop().then(ignore => {
+                if(qrReaderElement) qrReaderElement.style.display = 'none';
+                 handleScannedQrData(decodedText);
+            }).catch(err => {
+                 if(qrReaderElement) qrReaderElement.style.display = 'none';
+                 handleScannedQrData(decodedText);
+            }).finally(() => {
+                 if(startScanButton) startScanButton.disabled = false;
+            });
+        };
+        const config = { fps: 10, qrbox: { width: 200, height: 200 } };
+        window.html5QrCodeScanner.start({ facingMode: "environment" }, config, qrCodeSuccessCallback)
+            .catch(err => {
+                console.error(`QR Scanner start error: ${err}`);
+                if (err.name === 'NotAllowedError') {
+                    updateStatus('Camera access denied. Please check settings.', 'red');
+                } else {
+                    updateStatus(`QR scanner error: ${err.message}`, 'red');
+                }
+                if(qrReaderElement) qrReaderElement.style.display = 'none';
+                if(startScanButton) startScanButton.disabled = false;
+            });
+    } else {
+        console.error("Html5Qrcode not loaded.");
+        if(qrReaderElement) qrReaderElement.style.display = 'none';
+        if(startScanButton) startScanButton.disabled = false;
+        setTimeout(startQrScanner, 500);
+    }
 }
-function handleScannedQrData(decodedText) {
-    // ... (Handle scanned QR data logic)
+async function handleScannedQrData(decodedText) {
+    if(startScanButton) startScanButton.disabled = false;
+    try {
+        const url = new URL(decodedText);
+        const params = new URLSearchParams(url.search);
+        const friendId = params.get('id');
+        if (friendId) {
+            await addFriend(friendId);
+            if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+                updateStatus(`Connecting to ${friendId.substring(0,6)}...`, 'blue');
+                await createOfferForPeer(friendId);
+            } else { console.warn("WebSocket not ready, cannot initiate connection automatically after scan."); }
+        } else {
+            const msg = "Invalid QR code: URL does not contain an 'id' parameter.";
+            updateStatus(msg, 'red');
+        }
+    } catch (error) {
+        console.error("Error handling scanned data:", error);
+        if (error instanceof TypeError && error.message.includes("Invalid URL")) {
+             updateStatus('Invalid QR code: Not a valid URL format.', 'red');
+        } else {
+             updateStatus(`QR data processing error: ${error.message}`, 'red');
+             alert(`QR data processing error: ${error.message}`);
+        }
+    }
 }
 function handleCallFriendClick(event) {
-    // ... (Call friend logic)
+    const friendId = event.target.dataset.friendId;
+    if (!friendId) return;
+    if (!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
+        alert("Not connected to signaling server. Please wait or refresh.");
+        return;
+    }
+    if (currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED) {
+        alert("Already in a call or connecting.");
+        return;
+    }
+    updateStatus(`Calling ${friendId.substring(0, 6)}...`, 'blue');
+    setInteractionUiEnabled(false);
+    displayFriendList();
+    sendSignalingMessage({
+        type: 'call-request',
+        payload: { target: friendId }
+    });
 }
 function handleIncomingCall(callerId) {
-    // ... (Handle incoming call logic)
+    if (currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED) {
+        sendSignalingMessage({ type: 'call-busy', payload: { target: callerId } });
+        return;
+    }
+    currentCallerId = callerId;
+    if (callerIdElement) callerIdElement.textContent = callerId.substring(0, 8) + '...';
+    if (incomingCallModal) incomingCallModal.style.display = 'block';
 }
-function handleAcceptCall() {
-    // ... (Accept call logic)
+async function handleAcceptCall() {
+    if (!currentCallerId) return;
+    if (incomingCallModal) incomingCallModal.style.display = 'none';
+    updateStatus(`Accepting call from ${currentCallerId.substring(0,6)}. Connecting...`, 'blue');
+    sendSignalingMessage({ type: 'call-accepted', payload: { target: currentCallerId } });
+    await createPeerConnection(currentCallerId);
+    currentAppState = AppState.CONNECTING;
 }
 function handleRejectCall() {
-    // ... (Reject call logic)
+    if (!currentCallerId) return;
+    if (incomingCallModal) incomingCallModal.style.display = 'none';
+    sendSignalingMessage({ type: 'call-rejected', payload: { target: currentCallerId } });
+    currentCallerId = null;
 }
-function handleCallRejected(peerId) {
-    // ... (Handle call rejected logic)
+async function handleCallRejected(peerId) {
+    updateStatus(`Call rejected by ${peerId.substring(0, 6)}.`, 'orange');
+    currentAppState = AppState.INITIAL;
+    setInteractionUiEnabled(false);
+    await displayFriendList();
 }
-function handleCallBusy(peerId) {
-    // ... (Handle call busy logic)
+async function handleCallBusy(peerId) {
+    updateStatus(`Peer ${peerId.substring(0, 6)} is busy.`, 'orange');
+    currentAppState = AppState.INITIAL;
+    setInteractionUiEnabled(false);
+    await displayFriendList();
 }
-
-// ... (other functions: createAndSendOfferForRenegotiation, toggleLocalVideo, etc.)
-
-// Original Initialization Block (Reconstructed and Updated) [cite: 1772, 1773]
-window.addEventListener('DOMContentLoaded', async () => {
-    // DOM Element Retrieval (Original: [cite: 1769, 1770, 1771])
-    qrElement = document.getElementById('qrcode');
-    statusElement = document.getElementById('connectionStatus');
-    qrReaderElement = document.getElementById('qr-reader');
-    qrResultsElement = document.getElementById('qr-reader-results');
-    localVideoElement = document.getElementById('localVideo');
-    messageAreaElement = document.getElementById('messageArea');
-    postAreaElement = document.getElementById('postArea');
-    
-    // Message/Post Inputs (Original: [cite: 1769, 1770])
-    messageInputElement = document.getElementById('messageInput');
-    sendMessageButton = document.getElementById('sendMessage');
-    postInputElement = document.getElementById('postInput');
-    sendPostButton = document.getElementById('sendPost');
-    
-    // File/Call Controls (Original: [cite: 1770, 1771])
-    fileInputElement = document.getElementById('fileInput');
-    sendFileButton = document.getElementById('sendFile');
-    fileTransferStatusElement = document.getElementById('file-transfer-status');
-    callButton = document.getElementById('callButton');
-    videoButton = document.getElementById('videoButton');
-    startScanButton = document.getElementById('startScanButton');
-    
-    // Modal/Remote Videos (Original: [cite: 1769, 1771])
-    incomingCallModal = document.getElementById('incomingCallModal');
-    callerIdElement = document.getElementById('callerId');
-    acceptCallButton = document.getElementById('acceptCallButton');
-    rejectCallButton = document.getElementById('rejectCallButton');
-    friendListElement = document.getElementById('friendList'); // Note: This element doesn't exist in the provided index.html snippet but is referenced here.
-    
-    if (!remoteVideosContainer) {
-        remoteVideosContainer = document.querySelector('.video-scroll-container');
-    }
-
-    if (statusElement) {
-        statusElement.addEventListener('click', () => {
-            statusElement.classList.toggle('status-expanded');
-        }); [cite: 1772]
-    }
-
-    // Check for myDeviceId (localStorage should be checked first for persistence)
-    myDeviceId = localStorage.getItem('myDeviceId');
-    if (!myDeviceId) {
-        myDeviceId = generateUUID();
-        localStorage.setItem('myDeviceId', myDeviceId);
-    }
-    
-    // Display myDeviceId (e.g., in a status bar or title)
-    // document.title = `CyberNetCall (${myDeviceId.substring(0, 8)}...)`;
-
-    // QR Code Generation
-    if (qrElement && typeof QRious !== 'undefined') {
-        new QRious({
-            element: qrElement,
-            value: `${window.location.origin}/?id=${myDeviceId}`, // Connect URL
-            size: 200
-        });
-    }
-
-    // Event Listeners
-    if (sendMessageButton) sendMessageButton.addEventListener('click', handleSendMessage);
-    if (postInputElement && sendPostButton) {
-        sendPostButton.addEventListener('click', handleSendPost);
-        postInputElement.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') handleSendPost();
-        });
-    }
-    if (sendFileButton) sendFileButton.addEventListener('click', handleSendFile);
-    if (callButton) callButton.addEventListener('click', handleCallClick);
-    if (videoButton) videoButton.addEventListener('click', handleVideoClick);
-    if (startScanButton) startScanButton.addEventListener('click', handleScanButtonClick);
-    if (acceptCallButton) acceptCallButton.addEventListener('click', handleAcceptCall);
-    if (rejectCallButton) rejectCallButton.addEventListener('click', handleRejectCall);
-
-    // Initial Data Load
-    await displayInitialPosts();
-    
-    // --- FCM Initialization (NEW) ---
-    if (typeof firebase !== 'undefined') {
-        initFCM();
-    }
-    // --------------------------------
-    
-    // Service Worker Registration
-    if ('serviceWorker' in navigator) {
-      // ... (Original Service Worker registration logic)
-        navigator.serviceWorker.register('{% static "cnc/sw.js" %}')
-            .then(reg => {
-                // ... (Original update logic)
-                reg.onupdatefound = () => {
-                   const installingWorker = reg.installing;
-                   installingWorker.onstatechange = () => {
-                       if (installingWorker.state === 'installed') {
-                           if (navigator.serviceWorker.controller) {
-                               // New content available
-                               updateStatus('New content available.', 'blue');
-                               const refreshing = false;
-                               navigator.serviceWorker.addEventListener('controllerchange', () => {
-                                   if (refreshing) return;
-                                   window.location.reload();
-                                   refreshing = true;
-                               });
-                             } else {
-                               updateStatus('Content cached for offline use.', 'blue');
-                             }
-                        }
-                      }
-                    };
-                })
-                .catch(error => {
-                    updateStatus(`Service Worker registration error: ${error.message}`, 'red');
-                });
-    } else {
-        updateStatus('Offline features unavailable (Service Worker not supported)', 'orange'); [cite: 1773]
-    }
-    
-    // Service Worker Activation Message Listener
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', event => {
-        if (event.data && event.data.type === 'APP_ACTIVATED') {
+function setupEventListeners() {
+    window.addEventListener('resize', () => {
+        if (qrElement && qrElement.style.display !== 'none') {
+            const myAppUrl = window.location.origin + '/?id=' + myDeviceId;
+            updateQrCodeWithValue(myAppUrl);
+        }
+    });
+    sendMessageButton?.addEventListener('click', handleSendMessage);
+    sendPostButton?.addEventListener('click', handleSendPost);
+    sendFileButton?.addEventListener('click', handleSendFile);
+    callButton?.addEventListener('click', toggleVideoCall);
+    videoButton?.addEventListener('click', toggleLocalVideo);
+    startScanButton?.addEventListener('click', handleStartScanClick);
+    acceptCallButton?.addEventListener('click', handleAcceptCall);
+    rejectCallButton?.addEventListener('click', handleRejectCall);
+    messageInputElement?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !sendMessageButton.disabled) handleSendMessage();
+    });
+    postInputElement?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !sendPostButton.disabled) handleSendPost();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
           if ((!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) && !isAttemptingReconnect) {
-              connectWebSocket();
+            updateStatus('Re-checking connection...', 'blue');
+            if (wsReconnectTimer) {
+              clearTimeout(wsReconnectTimer);
+              wsReconnectTimer = null;
+            }
+            wsReconnectAttempts = 0;
+            connectWebSocket();
+          } else if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+            startAutoConnectFriendsTimer();
           }
-          startAutoConnectFriendsTimer();
+        } else {
+          stopAutoConnectFriendsTimer();
         }
       });
     }
+document.addEventListener('DOMContentLoaded', async () => {
+  qrElement = document.getElementById('qrcode');
+  statusElement = document.getElementById('connectionStatus');
+  qrReaderElement = document.getElementById('qr-reader');
+  qrResultsElement = document.getElementById('qr-reader-results');
+  localVideoElement = document.getElementById('localVideo');
+  remoteVideosContainer = document.getElementById('remoteVideosContainer');
+  messageAreaElement = document.getElementById('messageArea');
+  postAreaElement = document.getElementById('postArea');
+  incomingCallModal = document.getElementById('incomingCallModal');
+  callerIdElement = document.getElementById('callerId');
+  acceptCallButton = document.getElementById('acceptCallButton');
+  rejectCallButton = document.getElementById('rejectCallButton');
+  friendListElement = document.getElementById('friendList');
+  messageInputElement = document.getElementById('messageInput');
+  sendMessageButton = document.getElementById('sendMessage');
+  postInputElement = document.getElementById('postInput');
+  sendPostButton = document.getElementById('sendPost');
+  fileInputElement = document.getElementById('fileInput');
+  sendFileButton = document.getElementById('sendFile');
+  fileTransferStatusElement = document.getElementById('file-transfer-status');
+  callButton = document.getElementById('callButton');
+  videoButton = document.getElementById('videoButton');
+  startScanButton = document.getElementById('startScanButton');
+  if (!remoteVideosContainer) {
+    remoteVideosContainer = document.querySelector('.video-scroll-container');
+  }
+  if (statusElement) {
+    statusElement.addEventListener('click', () => {
+      statusElement.classList.toggle('status-expanded');
+    });
+  }
 
-    // Start WebSocket Connection
-    await connectWebSocket();
-    startAutoConnectFriendsTimer();
-    
-    // Handle URL parameters for connection (e.g., from a shared link)
-    const urlParams = new URLSearchParams(window.location.search);
-    const incomingFriendId = urlParams.get('id');
-    if (incomingFriendId && incomingFriendId !== myDeviceId) {
-        updateStatus(`Connecting from link with ${incomingFriendId.substring(0,6)}...`, 'blue');
-        await addFriend(incomingFriendId);
-        pendingConnectionFriendId = incomingFriendId;
+  if (typeof idb === 'undefined') {
+      updateStatus("Database features disabled (idb library not loaded).", "orange");
+  } else if (!dbPromise) {
+      updateStatus("Database initialization failed.", "red");
+  }
+  myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
+  localStorage.setItem('cybernetcall-deviceId', myDeviceId);
+  await displayInitialPosts();
+  setupEventListeners();
+  if (myDeviceId && typeof myDeviceId === 'string' && myDeviceId.length > 0) {
+    const myAppUrl = window.location.origin + '/?id=' + myDeviceId;
+    updateQrCodeWithValue(myAppUrl);
+  } else {
+    console.error("Device ID is not available. Cannot generate QR code.");
+    updateStatus("Error: Device ID missing. Cannot generate QR code.", "red");
+  }
+  updateStatus('Initializing...', 'black');
+  setInteractionUiEnabled(false);
+  await displayFriendList();
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/cnc/service-worker.js')
+      .then(registration => {
+        registration.onupdatefound = () => {
+          const installingWorker = registration.installing;
+          if (installingWorker) {
+                let refreshing;
+            installingWorker.onstatechange = () => {
+              if (installingWorker.state === 'installed') {
+                if (navigator.serviceWorker.controller) {
+                     if (confirm('A new version of the app is available. Refresh now to get the latest features?')) {
+                       if (registration.waiting) {
+                           registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+                       }
+                       navigator.serviceWorker.addEventListener('controllerchange', () => {
+                           if (refreshing) return;
+                           window.location.reload();
+                           refreshing = true;
+                       });
+                     } else {
+                       updateStatus('New version available. Please refresh soon to update.', 'blue');
+                     }
+                }
+              }
+            };
+          }
+        };
+      })
+      .catch(error => {
+        updateStatus(`Service Worker registration error: ${error.message}`, 'red');
+      });
+  } else {
+    updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', event => {
+      if (event.data && event.data.type === 'APP_ACTIVATED') {
+        if ((!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) && !isAttemptingReconnect) {
+            connectWebSocket();
+        }
+        startAutoConnectFriendsTimer();
+      }
+    });
+  }
+  await connectWebSocket();
+  const urlParams = new URLSearchParams(window.location.search);
+  const incomingFriendId = urlParams.get('id');
+  if (incomingFriendId && incomingFriendId !== myDeviceId) {
+      updateStatus(`Connecting from link with ${incomingFriendId.substring(0,6)}...`, 'blue');
+      await addFriend(incomingFriendId);
+      pendingConnectionFriendId = incomingFriendId;
+
     }
 
 });
