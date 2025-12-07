@@ -8,3 +8,4 @@ whitenoise
 channels
 channels_redis
 daphne
+pywebpush # プッシュ通知のVAPID暗号化と送信に使用
