@@ -1,4 +1,6 @@
 import os 
+from django.core.asgi import get_asgi_application
+
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cybernetcall.settings')
 
 # Djangoの初期化は、モデルや設定に依存する他のモジュールを
