@@ -23,6 +23,7 @@ let pendingConnectionFriendId = null;
 let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
+let offlineActivityCache = new Set(); // オフライン中の活動を記録するキャッシュ
 let onlineFriendsCache = new Set();
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
@@ -234,15 +235,19 @@ async function displayFriendList() {
 
     // オンラインの友達を先に、オフラインの友達を後にソート
     friends.sort((a, b) => {
+        const aHadOfflineActivity = offlineActivityCache.has(a.id);
+        const bHadOfflineActivity = offlineActivityCache.has(b.id);
         const aIsOnline = onlineFriendsCache.has(a.id);
         const bIsOnline = onlineFriendsCache.has(b.id);
+
+        if (aHadOfflineActivity && !bHadOfflineActivity) return -1; // 不在時活動ありを最優先
+        if (!aHadOfflineActivity && bHadOfflineActivity) return 1;
         if (aIsOnline && !bIsOnline) return -1;
         if (!aIsOnline && bIsOnline) return 1;
         // どちらもオンライン、またはどちらもオフラインの場合は、追加日が新しい順
         return (b.added || 0) - (a.added || 0);
     });
 
-    friends.forEach(friend => displaySingleFriend(friend, onlineFriendsCache.has(friend.id)));
   } catch (error) {
   }
 }
@@ -298,18 +303,35 @@ async function handleDeletePost(event) {
     });
     broadcastMessage(postDeleteMessage);
 }
-function displaySingleFriend(friend) {
+function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     if (!friendListElement) return;
     const div = document.createElement('div');
     div.className = 'friend-item';
     div.dataset.friendId = friend.id;
+
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}...`;
+    nameSpan.className = 'friend-id';
+
+    if (hadOfflineActivity && !isOnline) {
+        nameSpan.style.color = 'purple'; // 不在時にオンラインだった友達
+        const lastSeenText = friend.lastSeen ? `Last seen: ${new Date(friend.lastSeen).toLocaleString()}` : 'Offline';
+        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${lastSeenText})`;
+    } else if (isOnline) {
+        nameSpan.style.color = 'green'; // 現在オンラインの友達
+        const lastSeen = friend.lastSeen ? new Date(friend.lastSeen).toLocaleString() : 'Just now';
+        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (Online since: ${lastSeen})`;
+    } else {
+        nameSpan.style.color = 'inherit'; // オフラインの友達
+        const lastSeenText = friend.lastSeen ? `Last seen: ${new Date(friend.lastSeen).toLocaleString()}` : 'Offline';
+        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${lastSeenText})`;
+    }
+
     const callFriendButton = document.createElement('button');
     callFriendButton.textContent = '📞 Call';
     callFriendButton.dataset.friendId = friend.id;
     callFriendButton.addEventListener('click', handleCallFriendClick);
-    callFriendButton.disabled = !signalingSocket || signalingSocket.readyState !== WebSocket.OPEN || currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED;
+    callFriendButton.disabled = !isOnline || !signalingSocket || signalingSocket.readyState !== WebSocket.OPEN || currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED;
+
     div.appendChild(nameSpan);
     div.appendChild(callFriendButton);
     friendListElement.appendChild(div);
@@ -353,11 +375,18 @@ async function connectWebSocket() {
       switch (messageType) {
         case 'registered':
             // サーバーからの通知（不在着信など）を処理する
+            offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
-                payload.notifications.forEach(notification => {
-                    // ここで通知を表示する関数を呼び出す
-                    displayMissedCallNotification(notification.sender, notification.timestamp);
-                });
+                for (const notification of payload.notifications) { // forEachをfor...ofに変更してawaitを可能に
+                    if (notification.type === 'missed_call') {
+                        displayMissedCallNotification(notification.sender, notification.timestamp);
+                    } else if (notification.type === 'friend_online') {
+                        // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
+                        await updateFriendLastSeen(notification.sender, notification.timestamp);
+                        offlineActivityCache.add(notification.sender);
+                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
+                    }
+                }
             }
 
             updateStatus('Connected to signaling server. Ready.', 'green');
