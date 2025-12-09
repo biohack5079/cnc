@@ -102,18 +102,17 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             'uuid': self.user_uuid
         }, exclude_self=True)
 
-        # オフラインの友達に自分がオンラインになったことをPush通知で知らせる
-        # この機能のためには、サーバー側で友達関係を管理する必要があります。
-        # ここでは、クライアントから友達リストが送られてくることを想定した仮実装です。
-        # friends_list = payload.get('friends', [])
-        # if friends_list:
-        #     online_users = await self.get_all_online_user_uuids()
-        #     for friend_uuid in friends_list:
-        #         if friend_uuid not in online_users:
-        #             await self.send_push_notification_to_user(
-        #                 recipient_uuid=friend_uuid,
-        #                 payload={"title": "A friend is online", "body": f"User {self.user_uuid[:6]} is now online."}
-        #             )
+        # --- オフラインの友達に自分がオンラインになったことをPush通知で知らせる ---
+        # 注: この機能は、クライアントが自分の友達リストをサーバーに送ることで実現できます。
+        #     今回はクライアント側の改修を最小限にするため、コメントアウトしています。
+        #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
+        friends_list = payload.get('friends', [])
+        if friends_list:
+            for friend_uuid in friends_list:
+                await self.send_push_notification_to_user(
+                    recipient_uuid=friend_uuid,
+                    payload={"title": "Friend Online", "body": f"User {self.user_uuid[:6]} is now online."}
+                )
 
 
     async def handle_call_request(self, payload):

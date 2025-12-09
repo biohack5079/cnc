@@ -158,8 +158,13 @@ self.addEventListener('push', event => {
     badge: '/static/cnc/icons/icon-192x192.png' // Androidでステータスバーに表示される小さなアイコン
   };
 
-  // 通知を表示する
-  event.waitUntil(self.registration.showNotification(title, options));
+  const promiseChain = self.registration.showNotification(title, options)
+    .then(() => {
+      if ('setAppBadge' in self.navigator) {
+        return self.navigator.setAppBadge(1); // とりあえずバッジを1に設定
+      }
+    });
+  event.waitUntil(promiseChain);
 });
 
 // ユーザーが通知をクリックしたときに発火
