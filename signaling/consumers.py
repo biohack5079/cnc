@@ -111,12 +111,17 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         #     今回はクライアント側の改修を最小限にするため、コメントアウトしています。
         #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
         friends_list = payload.get('friends', [])
+        online_users = await self.get_all_online_user_uuids()
+
         if friends_list:
             for friend_uuid in friends_list:
-                await self.send_push_notification_to_user(
-                    recipient_uuid=friend_uuid,
-                    payload={"title": "Friend Online", "body": f"User {self.user_uuid[:6]} is now online."}
-                )
+                if friend_uuid not in online_users:
+                    # オフラインの友達には、DB通知とPush通知を送る
+                    await self.create_friend_online_notification(recipient_uuid=friend_uuid, sender_uuid=self.user_uuid)
+                    await self.send_push_notification_to_user(
+                        recipient_uuid=friend_uuid,
+                        payload={"title": "Friend Online", "body": f"User {self.user_uuid[:6]} is now online."}
+                    )
 
 
     async def handle_call_request(self, payload):
@@ -220,6 +225,15 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         )
 
     @database_sync_to_async
+    def create_friend_online_notification(self, recipient_uuid, sender_uuid):
+        """友達がオンラインになったことを通知するレコードをDBに作成する"""
+        Notification.objects.create(
+            recipient_uuid=recipient_uuid,
+            sender_uuid=sender_uuid,
+            notification_type='friend_online'
+        )
+
+    @database_sync_to_async
     def get_subscriptions_for_user(self, user_uuid):
         """指定されたユーザーのPush購読情報をDBから取得する"""
         return list(PushSubscription.objects.filter(user_uuid=user_uuid))
@@ -250,6 +264,14 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.exception(f"An unexpected error occurred while sending push notification to {recipient_uuid[:8]}: {e}")
 
+    @database_sync_to_async
+    def get_all_online_user_uuids(self):
+        """
+        現在オンラインの全ユーザーのUUIDリストを取得するヘルパー。
+        注: これはデモ用の簡易的な実装です。大規模なシステムではRedisなどを使うべきです。
+        """
+        return {consumer.user_uuid for consumer in SignalingConsumer.get_instances()}
+
     async def is_user_online(self, user_uuid):
         """
         ユーザーがオンラインかどうかを（間接的に）チェックする。
@@ -257,3 +279,77 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         """
         # 存在しないグループに送信してもエラーにはならない
         return True # 一旦、常にオンラインと見なして転送を試みる
+
+    _instances = set()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._instances.add(self)
+
+    @classmethod
+    def get_instances(cls):
+        return cls._instances
+            logger.info(f"Sent push notification to {len(subscriptions)} device(s) for user {recipient_uuid[:8]}.")
+
+        except WebPushException as ex:
+            logger.error(f"WebPushException for user {recipient_uuid[:8]}: {ex}")
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred while sending push notification to {recipient_uuid[:8]}: {e}")
+
+    @database_sync_to_async
+    def get_all_online_user_uuids(self):
+        """
+        現在オンラインの全ユーザーのUUIDリストを取得するヘルパー。
+        注: これはデモ用の簡易的な実装です。大規模なシステムではRedisなどを使うべきです。
+        """
+        return {consumer.user_uuid for consumer in SignalingConsumer.get_instances()}
+
+    async def is_user_online(self, user_uuid):
+        """
+        ユーザーがオンラインかどうかを（間接的に）チェックする。
+        この方法は100%正確ではありませんが、インメモリ辞書よりはるかに優れています。
+        """
+        # 存在しないグループに送信してもエラーにはならない
+        return True # 一旦、常にオンラインと見なして転送を試みる
+
+    _instances = set()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._instances.add(self)
+
+    @classmethod
+    def get_instances(cls):
+        return cls._instances
+            logger.info(f"Sent push notification to {len(subscriptions)} device(s) for user {recipient_uuid[:8]}.")
+
+        except WebPushException as ex:
+            logger.error(f"WebPushException for user {recipient_uuid[:8]}: {ex}")
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred while sending push notification to {recipient_uuid[:8]}: {e}")
+
+    @database_sync_to_async
+    def get_all_online_user_uuids(self):
+        """
+        現在オンラインの全ユーザーのUUIDリストを取得するヘルパー。
+        注: これはデモ用の簡易的な実装です。大規模なシステムではRedisなどを使うべきです。
+        """
+        return {consumer.user_uuid for consumer in SignalingConsumer.get_instances()}
+
+    async def is_user_online(self, user_uuid):
+        """
+        ユーザーがオンラインかどうかを（間接的に）チェックする。
+        この方法は100%正確ではありませんが、インメモリ辞書よりはるかに優れています。
+        """
+        # 存在しないグループに送信してもエラーにはならない
+        return True # 一旦、常にオンラインと見なして転送を試みる
+
+    _instances = set()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._instances.add(self)
+
+    @classmethod
+    def get_instances(cls):
+        return cls._instances

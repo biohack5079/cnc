@@ -118,7 +118,7 @@ function updateStatus(message, color = 'black') {
     }
     const newMessage = {
         id: generateUUID(), // メッセージごとのユニークID
-        text: messageText,
+        text: displayMessage,
         color: color,
         timestamp: new Date() // タイムスタンプを追加
     };
@@ -195,14 +195,15 @@ async function isFriend(friendId, dbInstance = null) {
     return false;
   }
 }
-async function updateFriendLastSeen(friendId) {
+async function updateFriendLastSeen(friendId, seenTime = null) {
     if (!dbPromise || !friendId) return;
     try {
         const db = await dbPromise;
         const tx = db.transaction('friends', 'readwrite');
         const friend = await tx.store.get(friendId);
         if (friend) {
-            friend.lastSeen = new Date();
+            // 指定された時刻、または現在時刻で更新
+            friend.lastSeen = seenTime ? new Date(seenTime) : new Date();
             await tx.store.put(friend);
             await tx.done;
         }
@@ -311,17 +312,26 @@ async function connectWebSocket() {
   const wsUrl = `${wsProtocol}//${location.host}/ws/signaling/`;
   updateStatus('Connecting to signaling server...', 'blue');
   signalingSocket = new WebSocket(wsUrl);
-  signalingSocket.onopen = () => {
+  signalingSocket.onopen = async () => {
     wsReconnectAttempts = 0;
     isAttemptingReconnect = false;
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
     }
+
+    // --- 友達リストを取得してregisterメッセージに含める ---
+    const db = await dbPromise;
+    const friends = await db.getAll('friends');
+    const friendIds = friends.map(f => f.id);
+
     updateStatus('Connected to signaling server. Registering...', 'blue');
     sendSignalingMessage({
       type: 'register',
-      payload: { uuid: myDeviceId }
+      payload: { 
+          uuid: myDeviceId,
+          friends: friendIds // 友達リストを追加
+      }
     });
   };
   signalingSocket.onmessage = async (event) => {
@@ -332,11 +342,16 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            // サーバーからの通知（不在着信など）を処理する
+            // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             if (payload.notifications && Array.isArray(payload.notifications)) {
-                payload.notifications.forEach(notification => {
-                    // ここで通知を表示する関数を呼び出す
-                    displayMissedCallNotification(notification.sender, notification.timestamp);
+                payload.notifications.forEach(async (notification) => {
+                    if (notification.type === 'missed_call') {
+                        displayMissedCallNotification(notification.sender, notification.timestamp);
+                    } else if (notification.type === 'friend_online') {
+                        // 友達の最終ログイン日時を更新
+                        await updateFriendLastSeen(notification.sender, notification.timestamp);
+                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
+                    }
                 });
             }
 
@@ -368,7 +383,7 @@ async function connectWebSocket() {
                 const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
-                    await updateFriendLastSeen(joinedUUID); // 最終ログイン時間を更新
+                    await updateFriendLastSeen(joinedUUID, new Date()); // 最終ログイン時間を現在時刻で更新
                     await displayFriendList(); // リストを再描画
                     if (peers[joinedUUID]) {
                         if (peers[joinedUUID].connectionState === 'connecting') {
