@@ -105,7 +105,7 @@ function renderStatusMessages() {
     // statusElement.scrollTop = statusElement.scrollHeight;
 }
 
-function updateStatus(message, color = 'black') {
+function updateStatus(message, color = 'black', withTimestamp = true) {
     if (!statusElement) return;
 
     const messageText = String(message || '');
@@ -113,6 +113,16 @@ function updateStatus(message, color = 'black') {
     // 明示的に空のメッセージが指定された場合は、全てのステータスをクリアする
     if (messageText === '') {
         statusMessages = [];
+        renderStatusMessages();
+        return;
+    }
+
+    // タイムスタンプ付きのメッセージを生成
+    const timestamp = new Date();
+    const displayMessage = withTimestamp ? `[${timestamp.toLocaleTimeString()}] ${messageText}` : messageText;
+
+    // 同じ内容のメッセージが直近にあれば追加しない
+    if (statusMessages.length > 0 && statusMessages[0].text.endsWith(messageText)) {
         renderStatusMessages();
         return;
     }
@@ -311,8 +321,8 @@ async function connectWebSocket() {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${wsProtocol}//${location.host}/ws/signaling/`;
   updateStatus('Connecting to signaling server...', 'blue');
-  signalingSocket = new WebSocket(wsUrl);
-  signalingSocket.onopen = async () => {
+  signalingSocket = new WebSocket(wsUrl); // WebSocketインスタンスを再作成
+  signalingSocket.onopen = async () => { // asyncキーワードを追加
     wsReconnectAttempts = 0;
     isAttemptingReconnect = false;
     if (wsReconnectTimer) {
@@ -342,16 +352,11 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
+            // サーバーからの通知（不在着信など）を処理する
             if (payload.notifications && Array.isArray(payload.notifications)) {
-                payload.notifications.forEach(async (notification) => {
-                    if (notification.type === 'missed_call') {
-                        displayMissedCallNotification(notification.sender, notification.timestamp);
-                    } else if (notification.type === 'friend_online') {
-                        // 友達の最終ログイン日時を更新
-                        await updateFriendLastSeen(notification.sender, notification.timestamp);
-                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
-                    }
+                payload.notifications.forEach(notification => {
+                    // ここで通知を表示する関数を呼び出す
+                    displayMissedCallNotification(notification.sender, notification.timestamp);
                 });
             }
 
@@ -1684,6 +1689,9 @@ function displayMissedCallNotification(senderId, timestamp) {
 }
 
 function setupEventListeners() {
+    const enableNotificationsButton = document.getElementById('enableNotificationsButton');
+    enableNotificationsButton?.addEventListener('click', subscribeToPushNotifications);
+
     window.addEventListener('resize', () => {
         if (qrElement && qrElement.style.display !== 'none') {
             const myAppUrl = window.location.origin + '/?id=' + myDeviceId;
