@@ -305,6 +305,14 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
+            // サーバーからの通知（不在着信など）を処理する
+            if (payload.notifications && Array.isArray(payload.notifications)) {
+                payload.notifications.forEach(notification => {
+                    // ここで通知を表示する関数を呼び出す
+                    displayMissedCallNotification(notification.sender, notification.timestamp);
+                });
+            }
+
             updateStatus('Connected to signaling server. Ready.', 'green');
             currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
@@ -1554,6 +1562,16 @@ async function handleCallBusy(peerId) {
     setInteractionUiEnabled(false);
     await displayFriendList();
 }
+
+function displayMissedCallNotification(senderId, timestamp) {
+    if (!statusElement) return;
+    const date = new Date(timestamp);
+    const timeString = date.toLocaleTimeString();
+    const message = `📞 Missed call from ${senderId.substring(0, 6)} at ${timeString}`;
+    // updateStatus を使って、他のステータスメッセージと同様に表示する
+    updateStatus(message, 'purple'); // 紫色などで目立たせる
+}
+
 function setupEventListeners() {
     window.addEventListener('resize', () => {
         if (qrElement && qrElement.style.display !== 'none') {
