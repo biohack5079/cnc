@@ -2,7 +2,9 @@ import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from cnc.models import Notification
+from django.conf import settings
+from pywebpush import webpush, WebPushException
+from cnc.models import Notification, PushSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,20 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             'uuid': self.user_uuid
         }, exclude_self=True)
 
+        # オフラインの友達に自分がオンラインになったことをPush通知で知らせる
+        # この機能のためには、サーバー側で友達関係を管理する必要があります。
+        # ここでは、クライアントから友達リストが送られてくることを想定した仮実装です。
+        # friends_list = payload.get('friends', [])
+        # if friends_list:
+        #     online_users = await self.get_all_online_user_uuids()
+        #     for friend_uuid in friends_list:
+        #         if friend_uuid not in online_users:
+        #             await self.send_push_notification_to_user(
+        #                 recipient_uuid=friend_uuid,
+        #                 payload={"title": "A friend is online", "body": f"User {self.user_uuid[:6]} is now online."}
+        #             )
+
+
     async def handle_call_request(self, payload):
         """着信リクエストを処理し、オフラインならDBに保存"""
         target_uuid = payload.get('target')
@@ -118,6 +134,11 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         else:
             # 相手がオフラインなら、DBに通知を保存
             await self.create_missed_call_notification(recipient_uuid=target_uuid, sender_uuid=sender_uuid)
+            # さらに、Push通知を送信
+            await self.send_push_notification_to_user(
+                recipient_uuid=target_uuid,
+                payload={"title": "Missed Call", "body": f"You have a missed call from {sender_uuid[:6]}"}
+            )
             logger.info(f"User {target_uuid[:8]} is offline. Saved missed call notification from {sender_uuid[:8]}.")
 
     async def signal_message(self, event):
@@ -194,6 +215,37 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             sender_uuid=sender_uuid,
             notification_type='missed_call'
         )
+
+    @database_sync_to_async
+    def get_subscriptions_for_user(self, user_uuid):
+        """指定されたユーザーのPush購読情報をDBから取得する"""
+        return list(PushSubscription.objects.filter(user_uuid=user_uuid))
+
+    async def send_push_notification_to_user(self, recipient_uuid, payload):
+        """特定のユーザーにPush通知を送信する"""
+        try:
+            subscriptions = await self.get_subscriptions_for_user(recipient_uuid)
+            if not subscriptions:
+                logger.info(f"No push subscriptions found for user {recipient_uuid[:8]}.")
+                return
+
+            vapid_claims = {
+                "sub": "mailto:admin@example.com" # 適切なメールアドレスに変更してください
+            }
+
+            for sub in subscriptions:
+                subscription_info = {
+                    "endpoint": sub.endpoint,
+                    "keys": {"p256dh": sub.p256dh, "auth": sub.auth}
+                }
+                webpush(subscription_info, json.dumps(payload), vapid_private_key=settings.VAPID_PRIVATE_KEY, vapid_claims=vapid_claims)
+            
+            logger.info(f"Sent push notification to {len(subscriptions)} device(s) for user {recipient_uuid[:8]}.")
+
+        except WebPushException as ex:
+            logger.error(f"WebPushException for user {recipient_uuid[:8]}: {ex}")
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred while sending push notification to {recipient_uuid[:8]}: {e}")
 
     async def is_user_online(self, user_uuid):
         """

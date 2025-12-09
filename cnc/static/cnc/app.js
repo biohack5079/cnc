@@ -1563,6 +1563,65 @@ async function handleCallBusy(peerId) {
     await displayFriendList();
 }
 
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+// app.js のどこか（例: DOMContentLoaded の最後の方）に追加
+
+async function subscribeToPushNotifications() {
+    if (!('PushManager' in window) || !('serviceWorker' in navigator)) {
+        console.warn('Push messaging is not supported');
+        return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const permission = await window.Notification.requestPermission();
+    if (permission !== 'granted') {
+        updateStatus('Push notification permission not granted.', 'orange');
+        return;
+    }
+
+    // サーバーからVAPID公開鍵を取得するAPIを呼び出す（別途実装が必要）
+    const response = await fetch('/api/get_vapid_public_key/'); 
+    const data = await response.json();
+    const vapidPublicKey = data.publicKey;
+
+    const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidPublicKey
+    });
+
+    // 購読情報をサーバーに送信して保存するAPIを呼び出す（別途実装が必要）
+    await fetch('/api/save_push_subscription/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify({ subscription: subscription, user_id: myDeviceId })
+    });
+    updateStatus('Subscribed to push notifications!', 'green');
+}
+
+// 適切なタイミングで呼び出す。例：ボタンクリック時や、初回アクセス時など。
+// subscribeToPushNotifications();
+
+
+// 適切なタイミングで呼び出す。例：ボタンクリック時や、初回アクセス時など。
+let unreadCount = 0;
+
 function displayMissedCallNotification(senderId, timestamp) {
     if (!statusElement) return;
     const date = new Date(timestamp);
@@ -1570,6 +1629,14 @@ function displayMissedCallNotification(senderId, timestamp) {
     const message = `📞 Missed call from ${senderId.substring(0, 6)} at ${timeString}`;
     // updateStatus を使って、他のステータスメッセージと同様に表示する
     updateStatus(message, 'purple'); // 紫色などで目立たせる
+
+    // --- バッジ機能の追加 ---
+    if ('setAppBadge' in navigator) {
+        unreadCount++;
+        navigator.setAppBadge(unreadCount).catch(error => {
+            console.error('Failed to set app badge:', error);
+        });
+    }
 }
 
 function setupEventListeners() {
@@ -1604,6 +1671,13 @@ function setupEventListeners() {
             wsReconnectAttempts = 0;
             connectWebSocket();
           } else if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+            // --- バッジクリア処理 ---
+            if ('clearAppBadge' in navigator) {
+                unreadCount = 0;
+                navigator.clearAppBadge().catch(error => {
+                    console.error('Failed to clear app badge:', error);
+                });
+            }
             startAutoConnectFriendsTimer();
           }
         } else {

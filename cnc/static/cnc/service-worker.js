@@ -134,3 +134,43 @@ self.addEventListener('fetch', event => {
   }
 });
 
+// --- Push通知のイベントリスナーを追加 ---
+
+// Push通知を受信したときに発火
+self.addEventListener('push', event => {
+  console.log('[Service Worker] Push Received.');
+
+  // PushされたデータをJSONとして解析
+  // デフォルトのタイトルと本文を用意
+  let data = { title: 'New Message', body: 'You have a new message.' };
+  if (event.data) {
+    try {
+      data = event.data.json();
+    } catch (e) {
+      console.error('[Service Worker] Push event data is not valid JSON.', e);
+    }
+  }
+
+  const title = data.title || 'CyberNetCall';
+  const options = {
+    body: data.body,
+    icon: '/static/cnc/icons/icon-192x192.png', // 通知に表示されるアイコン
+    badge: '/static/cnc/icons/icon-192x192.png' // Androidでステータスバーに表示される小さなアイコン
+  };
+
+  // 通知を表示する
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// ユーザーが通知をクリックしたときに発火
+self.addEventListener('notificationclick', event => {
+  console.log('[Service Worker] Notification click Received.');
+
+  // 通知を閉じる
+  event.notification.close();
+
+  // アプリのウィンドウを開くか、既存のウィンドウにフォーカスする
+  event.waitUntil(
+    clients.openWindow('/')
+  );
+});
