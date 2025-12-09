@@ -41,7 +41,7 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             if message_type == 'register':
                 uuid_from_payload = payload.get('uuid')
                 if uuid_from_payload:
-                    await self.handle_register(uuid_from_payload)
+                    await self.handle_register(payload)
                 else:
                     logger.warning("Registration message received without UUID.")
 
@@ -70,8 +70,12 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             import traceback
             traceback.print_exc()
 
-    async def handle_register(self, user_uuid):
+    async def handle_register(self, payload):
         """ユーザー登録と通知の送信を処理"""
+        user_uuid = payload.get('uuid')
+        if not user_uuid:
+            return
+
         self.user_uuid = user_uuid
 
         # ユーザー固有のグループと、全体通知用のグループに参加
