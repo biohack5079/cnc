@@ -177,7 +177,7 @@ async function addFriend(friendId, friendName = null) {
         updateStatus(`Friend (${friendId.substring(0,6)}) is already added.`, 'orange');
         return;
     }
-    await tx.store.put({ id: friendId, name: friendName, added: new Date() });
+    await tx.store.put({ id: friendId, name: friendName, added: new Date(), lastSeen: null });
     await tx.done;
     updateStatus(`Friend (${friendId.substring(0,6)}) added successfully!`, 'green');
     await displayFriendList();
@@ -195,16 +195,43 @@ async function isFriend(friendId, dbInstance = null) {
     return false;
   }
 }
+async function updateFriendLastSeen(friendId) {
+    if (!dbPromise || !friendId) return;
+    try {
+        const db = await dbPromise;
+        const tx = db.transaction('friends', 'readwrite');
+        const friend = await tx.store.get(friendId);
+        if (friend) {
+            friend.lastSeen = new Date();
+            await tx.store.put(friend);
+            await tx.done;
+        }
+    } catch (error) {
+        console.error(`Failed to update lastSeen for friend ${friendId}:`, error);
+    }
+}
 async function displayFriendList() {
   if (!dbPromise || !friendListElement) return;
   try {
     const db = await dbPromise;
-    const friends = await db.getAll('friends');
+    let friends = await db.getAll('friends');
     friendListElement.innerHTML = '<h3>Friends</h3>';
     if (friends.length === 0) {
         friendListElement.innerHTML += '<p>No friends added yet. Scan their QR code!</p>';
+        return;
     }
-    friends.forEach(friend => displaySingleFriend(friend));
+
+    // オンラインの友達を先に、オフラインの友達を後にソート
+    friends.sort((a, b) => {
+        const aIsOnline = onlineFriendsCache.has(a.id);
+        const bIsOnline = onlineFriendsCache.has(b.id);
+        if (aIsOnline && !bIsOnline) return -1;
+        if (!aIsOnline && bIsOnline) return 1;
+        // どちらもオンライン、またはどちらもオフラインの場合は、追加日が新しい順
+        return (b.added || 0) - (a.added || 0);
+    });
+
+    friends.forEach(friend => displaySingleFriend(friend, onlineFriendsCache.has(friend.id)));
   } catch (error) {
   }
 }
@@ -341,6 +368,8 @@ async function connectWebSocket() {
                 const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
+                    await updateFriendLastSeen(joinedUUID); // 最終ログイン時間を更新
+                    await displayFriendList(); // リストを再描画
                     if (peers[joinedUUID]) {
                         if (peers[joinedUUID].connectionState === 'connecting') {
                           return;
