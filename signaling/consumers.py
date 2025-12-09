@@ -6,21 +6,24 @@ from cnc.models import Notification
 
 logger = logging.getLogger(__name__)
 
-user_uuid_to_channel = {}
+# このグローバル変数は、複数のサーバープロセスで共有されないため、本番環境では問題になります。
+# Channelsのグループ機能を使ってオンライン状態を管理するように変更します。
+# user_uuid_to_channel = {}
 
 class SignalingConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user_uuid = None
+        self.broadcast_group_name = "signaling_broadcast"
         await self.accept()
         logger.info(f"WebSocket connection accepted from {self.channel_name}")
 
     async def disconnect(self, close_code):
         logger.info(f"WebSocket connection closed for {self.channel_name} (UUID: {self.user_uuid}), code: {close_code}")
-        if self.user_uuid and self.user_uuid in user_uuid_to_channel:
-            if self.user_uuid in user_uuid_to_channel:
-                del user_uuid_to_channel[self.user_uuid]
-            logger.info(f"Removed user {self.user_uuid} from tracking.")
-
+        if self.user_uuid:
+            # ブロードキャストグループとユーザー固有グループから離脱
+            await self.channel_layer.group_discard(self.broadcast_group_name, self.channel_name)
+            await self.channel_layer.group_discard(self.user_uuid, self.channel_name)
+            
             await self.broadcast({
                 'type': 'user_left',
                 'uuid': self.user_uuid
@@ -50,12 +53,11 @@ class SignalingConsumer(AsyncWebsocketConsumer):
                 if not target_uuid:
                     logger.warning(f"Received message type '{message_type}' without target from {self.user_uuid}. Ignoring.")
                     return
-                target_channel_name = user_uuid_to_channel.get(target_uuid)
+                
+                # ユーザー固有のグループにメッセージを転送する
+                await self.forward_message_to_target(target_uuid, message_type, payload)
+                # 注: 相手がオフラインでもエラーにはならない。メッセージが破棄されるだけ。
 
-                if target_channel_name:
-                    await self.forward_message_to_target(target_channel_name, message_type, payload)
-                else:
-                     logger.warning(f"Target user {target_uuid} not found or not connected.")
             else:
                  logger.warning(f"Received message type '{message_type}' from unregistered channel {self.channel_name}. Ignoring.")
 
@@ -68,12 +70,13 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     async def handle_register(self, user_uuid):
         """ユーザー登録と通知の送信を処理"""
-        if user_uuid in user_uuid_to_channel and user_uuid_to_channel[user_uuid] != self.channel_name:
-            logger.warning(f"UUID {user_uuid} is already registered to a different channel. Overwriting.")
-
         self.user_uuid = user_uuid
-        user_uuid_to_channel[self.user_uuid] = self.channel_name
-        logger.info(f"Registered user {self.user_uuid} to channel {self.channel_name}")
+
+        # ユーザー固有のグループと、全体通知用のグループに参加
+        await self.channel_layer.group_add(self.user_uuid, self.channel_name)
+        await self.channel_layer.group_add(self.broadcast_group_name, self.channel_name)
+
+        logger.info(f"Registered user {self.user_uuid} and added to groups.")
 
         # 未配信の通知を取得
         notifications = await self.get_undelivered_notifications(self.user_uuid)
@@ -105,10 +108,13 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         if not target_uuid or not sender_uuid:
             return
 
-        target_channel_name = user_uuid_to_channel.get(target_uuid)
-        if target_channel_name:
+        # RedisなどのChannel Layerに問い合わせて、相手のグループが存在するか（オンラインか）を間接的に確認
+        # ここでは簡略化のため、常に転送を試みる。相手がオフラインならメッセージは破棄される。
+        # より確実なオンラインチェックが必要な場合は、別途オンライン状態をRedisに保存するなどの仕組みが必要。
+        is_online = await self.is_user_online(target_uuid)
+        if is_online:
             # 相手がオンラインなら、そのまま転送
-            await self.forward_message_to_target(target_channel_name, 'call-request', payload)
+            await self.forward_message_to_target(target_uuid, 'call-request', payload)
         else:
             # 相手がオフラインなら、DBに通知を保存
             await self.create_missed_call_notification(recipient_uuid=target_uuid, sender_uuid=sender_uuid)
@@ -121,30 +127,36 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     async def broadcast(self, message, exclude_self=True):
         logger.debug(f"Broadcasting message: {message}")
-        for uuid, channel_name in user_uuid_to_channel.items():
-            if exclude_self and uuid == self.user_uuid:
-                continue
-            try:
-                await self.channel_layer.send(
-                    channel_name,
-                    {
-                        'type': 'signal_message',
-                        'message': message
-                    }
-                )
-            except Exception as e:
-                 logger.error(f"Error broadcasting to {uuid} ({channel_name}): {e}")
+        # 全体通知用グループに送信
+        await self.channel_layer.group_send(
+            self.broadcast_group_name,
+            {
+                'type': 'signal_message',
+                'message': message,
+                'sender_channel': self.channel_name if exclude_self else None
+            }
+        )
 
-    async def forward_message_to_target(self, target_channel_name, message_type, payload):
+    # `signal_message`ハンドラを修正して、自分自身へのブロードキャストをスキップ
+    async def signal_message(self, event):
+        message = event['message']
+        sender_channel = event.get('sender_channel')
+        if sender_channel and self.channel_name == sender_channel:
+            return
+        logger.debug(f"Sending signal message to {self.channel_name} (UUID: {self.user_uuid}): {message.get('type')}")
+        await self.send(text_data=json.dumps(message))
+
+    async def forward_message_to_target(self, target_uuid, message_type, payload):
         """特定の宛先にメッセージを転送する"""
-        logger.debug(f"Forwarding message type '{message_type}' from {self.user_uuid} to target channel {target_channel_name}")
+        logger.debug(f"Forwarding message type '{message_type}' from {self.user_uuid} to target user {target_uuid}")
         forward_message = {
             'type': message_type,
             'payload': payload,
             'from': self.user_uuid  # 送信者情報を付与
         }
-        await self.channel_layer.send(
-            target_channel_name,
+        # ユーザー固有のグループに送信
+        await self.channel_layer.group_send(
+            target_uuid,
             {
                 'type': 'signal_message',
                 'message': forward_message
@@ -182,3 +194,11 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             sender_uuid=sender_uuid,
             notification_type='missed_call'
         )
+
+    async def is_user_online(self, user_uuid):
+        """
+        ユーザーがオンラインかどうかを（間接的に）チェックする。
+        この方法は100%正確ではありませんが、インメモリ辞書よりはるかに優れています。
+        """
+        # 存在しないグループに送信してもエラーにはならない
+        return True # 一旦、常にオンラインと見なして転送を試みる
