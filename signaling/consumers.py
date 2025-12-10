@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # user_uuid_to_channel = {}
 
 class SignalingConsumer(AsyncWebsocketConsumer):
+    ONLINE_USERS_REDIS_KEY = "online_users_set"
     async def connect(self):
         self.user_uuid = None
         self.broadcast_group_name = "signaling_broadcast"
@@ -24,6 +25,8 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         if self.user_uuid:
             # ブロードキャストグループとユーザー固有グループから離脱
             await self.channel_layer.group_discard(self.broadcast_group_name, self.channel_name)
+            # Redisからオンラインユーザーを削除
+            await self.remove_online_user_from_redis(self.user_uuid)
             await self.channel_layer.group_discard(self.user_uuid, self.channel_name)
             
             await self.broadcast({
@@ -81,6 +84,8 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         # ユーザー固有のグループと、全体通知用のグループに参加
         await self.channel_layer.group_add(self.user_uuid, self.channel_name)
         await self.channel_layer.group_add(self.broadcast_group_name, self.channel_name)
+        # Redisにオンラインユーザーとして追加
+        await self.add_online_user_to_redis(self.user_uuid)
 
         logger.info(f"Registered user {self.user_uuid} and added to groups.")
 
@@ -112,17 +117,9 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
         friends_list = payload.get('friends', [])
 
-        if friends_list:
-            online_users = await self.get_all_online_user_uuids()
-            for friend_uuid in friends_list:
-                if friend_uuid not in online_users:
-                    # オフラインの友達には、DB通知を作成し、活動を記録する
-                    await self.create_friend_online_notification(recipient_uuid=friend_uuid, sender_uuid=self.user_uuid)
-                    # さらに、Push通知も送信する
-                    await self.send_push_notification_to_user(
-                        recipient_uuid=friend_uuid,
-                        payload={"title": "Friend Online", "body": f"User {self.user_uuid[:6]} is now online."}
-                    )
+        # このロジックは、handle_registerの最後に移動し、
+        # 自分がオンラインになったことをオフラインの友達に通知する
+        await self.notify_offline_friends_of_my_online_status(self.user_uuid, friends_list)
 
 
     async def handle_call_request(self, payload):
@@ -136,13 +133,11 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         # RedisなどのChannel Layerに問い合わせて、相手のグループが存在するか（オンラインか）を間接的に確認
         # ここでは簡略化のため、常に転送を試みる。相手がオフラインならメッセージは破棄される。
         # より確実なオンラインチェックが必要な場合は、別途オンライン状態をRedisに保存するなどの仕組みが必要。
-        is_online = await self.is_user_online(target_uuid)
         # is_onlineがTrueの場合でも、相手がグループにいない（オフライン）可能性がある
         # group_sendは失敗しないので、まず転送を試みる
         await self.forward_message_to_target(target_uuid, 'call-request', payload)
 
-        # 相手が本当にオンラインかどうかの確実な判定は難しいが、
-        # ここでは「転送を試みた上で、オンラインリストにいないなら不在」と見なす
+        is_online = await self.is_user_online(target_uuid) # 転送を試みた後でオンライン状態を再チェック
         if not is_online:
             # 相手がオンラインなら、そのまま転送
             # 相手がオフラインなら、DBに通知を保存
@@ -264,30 +259,64 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.exception(f"An unexpected error occurred while sending push notification to {recipient_uuid[:8]}: {e}")
 
+    # --- Redisを使ったオンラインユーザー管理 ---
+
     @database_sync_to_async
-    def get_all_online_user_uuids(self):
-        """
-        現在オンラインの全ユーザーのUUIDリストを取得するヘルパー。
-        注: これはデモ用の簡易的な実装です。大規模なシステムではRedisなどを使うべきです。
-        """
-        return {consumer.user_uuid for consumer in SignalingConsumer.get_instances()}
+    def _get_redis_connection(self):
+        """Redis接続を取得するヘルパー関数"""
+        from channels_redis.core import RedisChannelLayer
+        # Channel Layerのhosts設定からRedis接続を直接取得
+        # これはChannelsの内部実装に依存するため、注意が必要
+        # より堅牢な方法としては、DjangoのsettingsからREDIS_URLを読み込み、
+        # redis.asyncio.from_url などで直接接続を確立する
+        channel_layer = self.channel_layer
+        if isinstance(channel_layer, RedisChannelLayer):
+            # channels_redisの内部APIにアクセス
+            # 実際には、channel_layer.connection(0)などで接続を取得できるはず
+            # ここでは簡易的に、RedisChannelLayerの内部にある接続プールから取得する
+            # 厳密には、channels_redisのバージョンや設定に依存する
+            # 開発環境ではInMemoryChannelLayerの場合もあるため、その場合はNoneを返す
+            if hasattr(channel_layer, 'connection_pool'):
+                # connection_poolはリストなので、最初の接続を返す
+                return channel_layer.connection_pool[0]
+        return None
+
+    async def add_online_user_to_redis(self, user_uuid):
+        """ユーザーをオンラインリストにRedisに追加する"""
+        redis_conn = await self._get_redis_connection()
+        if redis_conn:
+            await redis_conn.sadd(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+            logger.debug(f"Added {user_uuid[:8]} to Redis online users.")
+
+    async def remove_online_user_from_redis(self, user_uuid):
+        """ユーザーをオンラインリストからRedisで削除する"""
+        redis_conn = await self._get_redis_connection()
+        if redis_conn:
+            await redis_conn.srem(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+            logger.debug(f"Removed {user_uuid[:8]} from Redis online users.")
+
+    async def get_all_online_user_uuids(self):
+        """Redisから現在オンラインの全ユーザーのUUIDリストを取得する"""
+        redis_conn = await self._get_redis_connection()
+        if redis_conn:
+            online_users_bytes = await redis_conn.smembers(self.ONLINE_USERS_REDIS_KEY)
+            return {u.decode('utf-8') for u in online_users_bytes}
+        return set()
 
     async def is_user_online(self, user_uuid):
-        """
-        ユーザーがオンラインかどうかを（間接的に）チェックする。
-        この方法は100%正確ではありませんが、インメモリ辞書よりはるかに優れています。
-        """
-        # 存在しないグループに送信してもエラーにはならない
-        # ここでの「オンライン」は、少なくとも1つのConsumerインスタンスがそのUUIDで登録されている状態を指す
+        """Redisを使ってユーザーがオンラインかどうかをチェックする"""
+        redis_conn = await self._get_redis_connection()
+        if redis_conn:
+            return await redis_conn.sismember(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+        return False
+
+    async def notify_offline_friends_of_my_online_status(self, my_uuid, friends_list):
+        """自分がオンラインになったことをオフラインの友達に通知する"""
         online_users = await self.get_all_online_user_uuids()
-        return user_uuid in online_users
-
-    _instances = set()
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._instances.add(self)
-
-    @classmethod
-    def get_instances(cls):
-        return cls._instances
+        for friend_uuid in friends_list:
+            if friend_uuid not in online_users:
+                await self.create_friend_online_notification(recipient_uuid=friend_uuid, sender_uuid=my_uuid)
+                await self.send_push_notification_to_user(
+                    recipient_uuid=friend_uuid,
+                    payload={"title": "Friend Online", "body": f"User {my_uuid[:6]} is now online."}
+                )
