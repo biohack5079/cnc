@@ -23,6 +23,7 @@ let pendingConnectionFriendId = null;
 let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
+let offlineActivityCache = new Set(); // オフライン中の活動を記録するキャッシュ
 let onlineFriendsCache = new Set();
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
@@ -234,8 +235,13 @@ async function displayFriendList() {
 
     // オンラインの友達を先に、オフラインの友達を後にソート
     friends.sort((a, b) => {
+        const aHadOfflineActivity = offlineActivityCache.has(a.id);
+        const bHadOfflineActivity = offlineActivityCache.has(b.id);
         const aIsOnline = onlineFriendsCache.has(a.id);
         const bIsOnline = onlineFriendsCache.has(b.id);
+
+        if (aHadOfflineActivity && !bHadOfflineActivity) return -1; // 不在時活動ありを最優先
+        if (!aHadOfflineActivity && bHadOfflineActivity) return 1;
         if (aIsOnline && !bIsOnline) return -1;
         if (!aIsOnline && bIsOnline) return 1;
         // どちらもオンライン、またはどちらもオフラインの場合は、追加日が新しい順
@@ -370,11 +376,23 @@ async function connectWebSocket() {
       switch (messageType) {
         case 'registered':
             // サーバーからの通知（不在着信など）を処理する
+            // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
+            offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
                 payload.notifications.forEach(notification => {
                     // ここで通知を表示する関数を呼び出す
                     displayMissedCallNotification(notification.sender, notification.timestamp);
                 });
+                for (const notification of payload.notifications) {
+                    if (notification.type === 'missed_call') {
+                        displayMissedCallNotification(notification.sender, notification.timestamp);
+                    } else if (notification.type === 'friend_online') {
+                        // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
+                        await updateFriendLastSeen(notification.sender, notification.timestamp);
+                        offlineActivityCache.add(notification.sender);
+                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
+                    }
+                }
             }
 
             updateStatus('Connected to signaling server. Ready.', 'green');

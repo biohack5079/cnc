@@ -137,10 +137,14 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         # ここでは簡略化のため、常に転送を試みる。相手がオフラインならメッセージは破棄される。
         # より確実なオンラインチェックが必要な場合は、別途オンライン状態をRedisに保存するなどの仕組みが必要。
         is_online = await self.is_user_online(target_uuid)
-        if is_online:
+        # is_onlineがTrueの場合でも、相手がグループにいない（オフライン）可能性がある
+        # group_sendは失敗しないので、まず転送を試みる
+        await self.forward_message_to_target(target_uuid, 'call-request', payload)
+
+        # 相手が本当にオンラインかどうかの確実な判定は難しいが、
+        # ここでは「転送を試みた上で、オンラインリストにいないなら不在」と見なす
+        if not is_online:
             # 相手がオンラインなら、そのまま転送
-            await self.forward_message_to_target(target_uuid, 'call-request', payload)
-        else:
             # 相手がオフラインなら、DBに通知を保存
             await self.create_missed_call_notification(recipient_uuid=target_uuid, sender_uuid=sender_uuid)
             # さらに、Push通知を送信
@@ -149,11 +153,6 @@ class SignalingConsumer(AsyncWebsocketConsumer):
                 payload={"title": "Missed Call", "body": f"You have a missed call from {sender_uuid[:6]}"}
             )
             logger.info(f"User {target_uuid[:8]} is offline. Saved missed call notification from {sender_uuid[:8]}.")
-
-    async def signal_message(self, event):
-        message = event['message']
-        logger.debug(f"Sending signal message to {self.channel_name} (UUID: {self.user_uuid}): {message.get('type')}")
-        await self.send(text_data=json.dumps(message))
 
     async def broadcast(self, message, exclude_self=True):
         logger.debug(f"Broadcasting message: {message}")
@@ -279,7 +278,9 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         この方法は100%正確ではありませんが、インメモリ辞書よりはるかに優れています。
         """
         # 存在しないグループに送信してもエラーにはならない
-        return True # 一旦、常にオンラインと見なして転送を試みる
+        # ここでの「オンライン」は、少なくとも1つのConsumerインスタンスがそのUUIDで登録されている状態を指す
+        online_users = await self.get_all_online_user_uuids()
+        return user_uuid in online_users
 
     _instances = set()
 
