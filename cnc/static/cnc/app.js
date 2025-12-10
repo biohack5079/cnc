@@ -375,14 +375,9 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            // サーバーからの通知（不在着信など）を処理する
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
-                payload.notifications.forEach(notification => {
-                    // ここで通知を表示する関数を呼び出す
-                    displayMissedCallNotification(notification.sender, notification.timestamp);
-                });
                 for (const notification of payload.notifications) {
                     if (notification.type === 'missed_call') {
                         displayMissedCallNotification(notification.sender, notification.timestamp);
