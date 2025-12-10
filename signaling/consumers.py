@@ -111,13 +111,14 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         #     今回はクライアント側の改修を最小限にするため、コメントアウトしています。
         #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
         friends_list = payload.get('friends', [])
-        online_users = await self.get_all_online_user_uuids()
 
         if friends_list:
+            online_users = await self.get_all_online_user_uuids()
             for friend_uuid in friends_list:
                 if friend_uuid not in online_users:
-                    # オフラインの友達には、DB通知とPush通知を送る
+                    # オフラインの友達には、DB通知を作成し、活動を記録する
                     await self.create_friend_online_notification(recipient_uuid=friend_uuid, sender_uuid=self.user_uuid)
+                    # さらに、Push通知も送信する
                     await self.send_push_notification_to_user(
                         recipient_uuid=friend_uuid,
                         payload={"title": "Friend Online", "body": f"User {self.user_uuid[:6]} is now online."}
