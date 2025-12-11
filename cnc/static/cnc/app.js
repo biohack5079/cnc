@@ -23,7 +23,6 @@ let pendingConnectionFriendId = null;
 let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
-let offlineActivityCache = new Set(); // オフライン中の活動を記録するキャッシュ
 let onlineFriendsCache = new Set();
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
@@ -377,7 +376,6 @@ async function connectWebSocket() {
         case 'registered':
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
-            // サーバーからの通知（不在着信など）を処理する
             if (payload.notifications && Array.isArray(payload.notifications)) {
                 for (const notification of payload.notifications) {
                     if (notification.type === 'missed_call') {
@@ -389,10 +387,6 @@ async function connectWebSocket() {
                         updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
                     }
                 }
-                payload.notifications.forEach(notification => {
-                    // ここで通知を表示する関数を呼び出す
-                    displayMissedCallNotification(notification.sender, notification.timestamp);
-                });
             }
 
             updateStatus('Connected to signaling server. Ready.', 'green');
@@ -1775,9 +1769,10 @@ function setupEventListeners() {
         }
       });
     }
-    async function handleSubscribeClick() {
+
+async function handleSubscribeClick() {
     // TODO: このキーをStripeダッシュボードから取得したご自身の公開可能キーに置き換えてください
-    const stripePublishableKey = "pk_test_51RV3X8BCbZIvrNaJzce48iOyMd8xMVxzD3duWHzuotHVMnM4dhFHuxetabWUHW8cT9zJEJv0v9CtZE1N3BlDSUGw00Ysl8vg62"; 
+    const stripePublishableKey = "price_1Scnx8BCbZIvrNaJwK8oUqeW"; 
     const stripe = Stripe(stripePublishableKey);
 
     try {
