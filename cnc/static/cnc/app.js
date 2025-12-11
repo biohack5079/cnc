@@ -377,6 +377,7 @@ async function connectWebSocket() {
         case 'registered':
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
+            // サーバーからの通知（不在着信など）を処理する
             if (payload.notifications && Array.isArray(payload.notifications)) {
                 for (const notification of payload.notifications) {
                     if (notification.type === 'missed_call') {
@@ -388,6 +389,10 @@ async function connectWebSocket() {
                         updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
                     }
                 }
+                payload.notifications.forEach(notification => {
+                    // ここで通知を表示する関数を呼び出す
+                    displayMissedCallNotification(notification.sender, notification.timestamp);
+                });
             }
 
             updateStatus('Connected to signaling server. Ready.', 'green');
@@ -1770,6 +1775,31 @@ function setupEventListeners() {
         }
       });
     }
+    async function handleSubscribeClick() {
+    // TODO: このキーをStripeダッシュボードから取得したご自身の公開可能キーに置き換えてください
+    const stripePublishableKey = "pk_test_51RV3X8BCbZIvrNaJzce48iOyMd8xMVxzD3duWHzuotHVMnM4dhFHuxetabWUHW8cT9zJEJv0v9CtZE1N3BlDSUGw00Ysl8vg62"; 
+    const stripe = Stripe(stripePublishableKey);
+
+    try {
+        const response = await fetch('/api/create-checkout-session/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({ user_id: myDeviceId })
+        });
+        const session = await response.json();
+        if (session.id) {
+            await stripe.redirectToCheckout({ sessionId: session.id });
+        } else {
+            updateStatus(`Could not create checkout session: ${session.error || 'Unknown error'}`, 'red');
+        }
+    } catch (error) {
+        updateStatus(`Error during subscription: ${error}`, 'red');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   qrElement = document.getElementById('qrcode');
   statusElement = document.getElementById('connectionStatus');
@@ -1801,10 +1831,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     statusElement.addEventListener('click', () => {
       statusElement.classList.toggle('status-expanded');
     });
-    // Stripe.jsを動的にロード
-    const stripeScript = document.createElement('script');
-    stripeScript.src = 'https://js.stripe.com/v3/';
-    document.head.appendChild(stripeScript);
   }
 
   if (typeof idb === 'undefined') {
