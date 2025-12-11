@@ -8,4 +8,5 @@ whitenoise
 channels
 channels_redis
 daphne
+stripe
 pywebpush

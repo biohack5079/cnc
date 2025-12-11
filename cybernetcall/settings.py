@@ -156,9 +156,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = '/static/'
-STATICFILES_DIRS = [
-    BASE_DIR / 'cnc/static',
-]
+# STATICFILES_DIRS は、アプリケーションの 'static' ディレクトリ外に静的ファイルを置く場合に使用します。
+# 今回は 'cnc' アプリ内に静的ファイルがあるため、この設定は不要です。
 
 
 # Default primary key field type
@@ -179,4 +178,3 @@ VAPID_PRIVATE_KEY = env("VAPID_PRIVATE_KEY")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY")
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = env("STRIPE_PRICE_ID")
-
