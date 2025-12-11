@@ -6,6 +6,8 @@ from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from .models import PushSubscription
+from .models import StripeCustomer
+import stripe
 
 
 class IndexView(View):
@@ -46,3 +48,51 @@ class SavePushSubscriptionView(View):
             return JsonResponse({'status': 'ok'})
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             return HttpResponseBadRequest(f"Invalid request: {e}")
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CreateCheckoutSessionView(View):
+    def post(self, request, *args, **kwargs):
+        try:
+            data = json.loads(request.body)
+            user_id = data.get('user_id')
+            if not user_id:
+                return HttpResponseBadRequest("User ID is required.")
+
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+
+            # ユーザーに対応するStripe顧客を検索または作成
+            try:
+                customer, created = StripeCustomer.objects.get_or_create(
+                    user_uuid=user_id,
+                    defaults={'stripe_customer_id': stripe.Customer.create(metadata={'user_uuid': user_id})['id']}
+                )
+            except Exception as e:
+                 # Stripe APIでエラーが発生した場合など
+                 return JsonResponse({'error': str(e)}, status=500)
+
+
+            checkout_session = stripe.checkout.Session.create(
+                customer=customer.stripe_customer_id,
+                payment_method_types=['card'],
+                line_items=[
+                    {
+                        'price': settings.STRIPE_PRICE_ID,
+                        'quantity': 1,
+                    },
+                ],
+                mode='subscription',
+                success_url=request.build_absolute_uri('/') + '?session_id={CHECKOUT_SESSION_ID}',
+                cancel_url=request.build_absolute_uri('/'),
+            )
+            return JsonResponse({'id': checkout_session.id})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class StripeWebhookView(View):
+    def post(self, request, *args, **kwargs):
+        # Webhookの処理は後で実装します
+        # ここでは、Stripeからのリクエストを正常に受け取ったことを示すために200 OKを返します
+        return JsonResponse({'status': 'success'})

@@ -1722,6 +1722,9 @@ function setupEventListeners() {
     const enableNotificationsButton = document.getElementById('enableNotificationsButton');
     enableNotificationsButton?.addEventListener('click', subscribeToPushNotifications);
 
+    const subscribeButton = document.getElementById('subscribeButton');
+    subscribeButton?.addEventListener('click', handleSubscribeClick);
+
     window.addEventListener('resize', () => {
         if (qrElement && qrElement.style.display !== 'none') {
             const myAppUrl = window.location.origin + '/?id=' + myDeviceId;
@@ -1798,6 +1801,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     statusElement.addEventListener('click', () => {
       statusElement.classList.toggle('status-expanded');
     });
+    // Stripe.jsを動的にロード
+    const stripeScript = document.createElement('script');
+    stripeScript.src = 'https://js.stripe.com/v3/';
+    document.head.appendChild(stripeScript);
   }
 
   if (typeof idb === 'undefined') {

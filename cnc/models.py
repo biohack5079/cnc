@@ -55,3 +55,25 @@ class PushSubscription(models.Model):
     class Meta:
         verbose_name = "Push Subscription"
         verbose_name_plural = "Push Subscriptions"
+
+class StripeCustomer(models.Model):
+    """
+    Stripeの顧客情報とサブスクリプション状態を管理するモデル。
+    """
+    # アプリのユーザーUUID
+    user_uuid = models.CharField(max_length=36, primary_key=True)
+    
+    # Stripeの顧客ID (cus_...)
+    stripe_customer_id = models.CharField(max_length=255, unique=True)
+    
+    # StripeのサブスクリプションID (sub_...)
+    stripe_subscription_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    
+    # サブスクリプションの状態 (active, trialing, past_due, canceled, unpaid, incomplete, incomplete_expired)
+    subscription_status = models.CharField(max_length=50, default="incomplete")
+    
+    # 現在の請求期間の終了日時 (Unixタイムスタンプ)
+    current_period_end = models.DateTimeField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Stripe Customer for {self.user_uuid[:8]} ({self.subscription_status})"
