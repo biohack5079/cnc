@@ -350,6 +350,7 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
 }
 
 function populateFriendElement(div, friend, isOnline, hadOfflineActivity) {
+    const nameSpan = document.createElement('span');
     nameSpan.className = 'friend-id';
 
     if (hadOfflineActivity && !isOnline) {
