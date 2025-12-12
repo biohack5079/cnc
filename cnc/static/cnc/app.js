@@ -254,29 +254,17 @@ async function displayFriendList() {
         return (b.added || 0) - (a.added || 0);
     });
 
-    // 既存の友達要素を更新または新規作成
+    // 既存の友達要素を一度すべてデタッチ（削除）する
+    const friendElements = Array.from(friendListElement.querySelectorAll('.friend-item'));
+    friendElements.forEach(el => el.remove());
+
+    // ソートされた順序で、すべての友達要素を再作成して追加する
     friends.forEach(friend => {
         const isOnline = onlineFriendsCache.has(friend.id);
         const hadOfflineActivity = offlineActivityCache.has(friend.id);
-        const existingDiv = friendListElement.querySelector(`div[data-friend-id="${friend.id}"]`);
-        if (existingDiv) {
-            // 既存の要素を更新
-            updateSingleFriend(existingDiv, friend, isOnline, hadOfflineActivity);
-        } else {
-            // 新しい要素を作成
-            displaySingleFriend(friend, isOnline, hadOfflineActivity);
-        }
+        // 常に新しい要素を作成して追加する
+        displaySingleFriend(friend, isOnline, hadOfflineActivity);
     });
-
-    // ソート順に合わせてDOM要素を並べ替え
-    friends.forEach(friend => {
-        const friendDiv = friendListElement.querySelector(`div[data-friend-id="${friend.id}"]`);
-        if (friendDiv) {
-            friendListElement.appendChild(friendDiv);
-        }
-    });
-
-  } catch (error) {
   }
 }
 async function displayInitialPosts() {
