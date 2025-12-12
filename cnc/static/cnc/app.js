@@ -453,12 +453,12 @@ async function connectWebSocket() {
         case 'user_online':
             const joinedUUID = message.uuid;
             if (joinedUUID && joinedUUID !== myDeviceId) {
-                await displayFriendList();
                 const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
                     await updateFriendLastSeen(joinedUUID, new Date()); // 最終ログイン時間を現在時刻で更新
-                    await displayFriendList(); // リストを再描画
+                    // 足跡情報を保持したままリストを再描画
+                    await displayFriendList(); 
                     if (peers[joinedUUID]) {
                         if (peers[joinedUUID].connectionState === 'connecting') {
                           return;
