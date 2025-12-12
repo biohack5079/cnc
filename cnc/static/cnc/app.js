@@ -225,14 +225,21 @@ async function displayFriendList() {
   if (!dbPromise || !friendListElement) return;
   try {
     const db = await dbPromise;
-    let friends = await db.getAll('friends');
-    friendListElement.innerHTML = '<h3>Friends</h3>';
+    const friends = await db.getAll('friends');
+
+    // 'Friends' ヘッダーがなければ追加
+    if (!friendListElement.querySelector('h3')) {
+        const header = document.createElement('h3');
+        header.textContent = 'Friends';
+        friendListElement.prepend(header);
+    }
+
     if (friends.length === 0) {
-        friendListElement.innerHTML += '<p>No friends added yet. Scan their QR code!</p>';
+        // 既存の友達項目をクリアし、メッセージを表示
+        friendListElement.innerHTML = '<h3>Friends</h3><p>No friends added yet. Scan their QR code!</p>';
         return;
     }
 
-    // オンラインの友達を先に、オフラインの友達を後にソート
     friends.sort((a, b) => {
         const aHadOfflineActivity = offlineActivityCache.has(a.id);
         const bHadOfflineActivity = offlineActivityCache.has(b.id);
@@ -247,7 +254,28 @@ async function displayFriendList() {
         return (b.added || 0) - (a.added || 0);
     });
 
-    friends.forEach(friend => displaySingleFriend(friend, onlineFriendsCache.has(friend.id), offlineActivityCache.has(friend.id)));
+    // 既存の友達要素を更新または新規作成
+    friends.forEach(friend => {
+        const isOnline = onlineFriendsCache.has(friend.id);
+        const hadOfflineActivity = offlineActivityCache.has(friend.id);
+        const existingDiv = friendListElement.querySelector(`div[data-friend-id="${friend.id}"]`);
+        if (existingDiv) {
+            // 既存の要素を更新
+            updateSingleFriend(existingDiv, friend, isOnline, hadOfflineActivity);
+        } else {
+            // 新しい要素を作成
+            displaySingleFriend(friend, isOnline, hadOfflineActivity);
+        }
+    });
+
+    // ソート順に合わせてDOM要素を並べ替え
+    friends.forEach(friend => {
+        const friendDiv = friendListElement.querySelector(`div[data-friend-id="${friend.id}"]`);
+        if (friendDiv) {
+            friendListElement.appendChild(friendDiv);
+        }
+    });
+
   } catch (error) {
   }
 }
@@ -303,6 +331,13 @@ async function handleDeletePost(event) {
     });
     broadcastMessage(postDeleteMessage);
 }
+
+// 既存の友達要素を更新する関数
+function updateSingleFriend(div, friend, isOnline, hadOfflineActivity) {
+    // displaySingleFriend のロジックを再利用するため、一度中身をクリアして再生成
+    div.innerHTML = '';
+    populateFriendElement(div, friend, isOnline, hadOfflineActivity);
+}
 function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     if (!friendListElement) return;
     const div = document.createElement('div');
@@ -310,6 +345,11 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     div.dataset.friendId = friend.id;
 
     const nameSpan = document.createElement('span');
+    populateFriendElement(div, friend, isOnline, hadOfflineActivity);
+    friendListElement.appendChild(div);
+}
+
+function populateFriendElement(div, friend, isOnline, hadOfflineActivity) {
     nameSpan.className = 'friend-id';
 
     if (hadOfflineActivity && !isOnline) {
@@ -334,7 +374,6 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
 
     div.appendChild(nameSpan);
     div.appendChild(callFriendButton);
-    friendListElement.appendChild(div);
 }
 async function connectWebSocket() {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
