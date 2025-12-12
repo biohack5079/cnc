@@ -1771,8 +1771,8 @@ function setupEventListeners() {
     }
 
 async function handleSubscribeClick() {
-    // TODO: 下の "YOUR_STRIPE_PUBLISHABLE_KEY" をStripeダッシュボードから取得したご自身の「公開可能キー」に置き換えてください。
-    const stripePublishableKey = "pk_test_51RV3X8BCbZIvrNaJzce48iOyMd8xMVxzD3duWHzuotHVMnM4dhFHuxetabWUHW8cT9zJEJv0v9CtZE1N3BlDSUGw00Ysl8vg62"; // 例: "pk_test_..."
+    // TODO: このキーをStripeダッシュボードから取得したご自身の公開可能キーに置き換えてください
+    const stripePublishableKey = "price_1Scnx8BCbZIvrNaJwK8oUqeW"; 
     const stripe = Stripe(stripePublishableKey);
 
     try {
