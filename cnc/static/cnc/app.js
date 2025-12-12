@@ -24,6 +24,7 @@ let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
 let onlineFriendsCache = new Set();
+let offlineActivityCache = new Set();
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
