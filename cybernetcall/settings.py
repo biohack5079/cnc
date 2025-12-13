@@ -93,6 +93,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
+            "hosts": [REDIS_URL],
         },
         # 開発中はインメモリバックエンドでもOK
         # "BACKEND": "channels.layers.InMemoryChannelLayer"
