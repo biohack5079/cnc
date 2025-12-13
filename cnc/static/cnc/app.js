@@ -24,6 +24,8 @@ let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
 let onlineFriendsCache = new Set();
+let offlineActivityCache = new Set();
+let isSubscribed = false; // ユーザーの課金状態を保持
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
@@ -234,10 +236,10 @@ async function displayFriendList() {
 
     // オンラインの友達を先に、オフラインの友達を後にソート
     friends.sort((a, b) => {
-        const aHadOfflineActivity = offlineActivityCache.has(a.id);
-        const bHadOfflineActivity = offlineActivityCache.has(b.id);
         const aIsOnline = onlineFriendsCache.has(a.id);
         const bIsOnline = onlineFriendsCache.has(b.id);
+        const aHadOfflineActivity = isSubscribed && offlineActivityCache.has(a.id);
+        const bHadOfflineActivity = isSubscribed && offlineActivityCache.has(b.id);
 
         if (aHadOfflineActivity && !bHadOfflineActivity) return -1; // 不在時活動ありを最優先
         if (!aHadOfflineActivity && bHadOfflineActivity) return 1;
@@ -247,7 +249,11 @@ async function displayFriendList() {
         return (b.added || 0) - (a.added || 0);
     });
 
-    friends.forEach(friend => displaySingleFriend(friend, onlineFriendsCache.has(friend.id), offlineActivityCache.has(friend.id)));
+    friends.forEach(friend => {
+        const isOnline = onlineFriendsCache.has(friend.id);
+        const hadOfflineActivity = isSubscribed && offlineActivityCache.has(friend.id);
+        displaySingleFriend(friend, isOnline, hadOfflineActivity);
+    });
   } catch (error) {
   }
 }
@@ -374,6 +380,7 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
+            isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
@@ -381,10 +388,12 @@ async function connectWebSocket() {
                     if (notification.type === 'missed_call') {
                         displayMissedCallNotification(notification.sender, notification.timestamp);
                     } else if (notification.type === 'friend_online') {
-                        // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
-                        await updateFriendLastSeen(notification.sender, notification.timestamp);
-                        offlineActivityCache.add(notification.sender);
-                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
+                        if (isSubscribed) { // 課金ユーザーのみ足跡機能を処理
+                            // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
+                            await updateFriendLastSeen(notification.sender, notification.timestamp);
+                            offlineActivityCache.add(notification.sender);
+                            updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
+                        }
                     }
                 }
             }
@@ -1771,16 +1780,25 @@ function setupEventListeners() {
     }
 
 async function handleSubscribeClick() {
-    // TODO: このキーをStripeダッシュボードから取得したご自身の公開可能キーに置き換えてください
-    const stripePublishableKey = "price_1Scnx8BCbZIvrNaJwK8oUqeW"; 
-    const stripe = Stripe(stripePublishableKey);
+    // サーバーから公開鍵を取得
+    const keyResponse = await fetch('/api/get_stripe_public_key/');
+    const keyData = await keyResponse.json();
+    const stripePublicKey = keyData.publicKey;
+
+    if (!stripePublicKey) {
+        updateStatus('Could not retrieve payment configuration.', 'red');
+        return;
+    }
+
+    const stripe = Stripe(stripePublicKey);
 
     try {
         const response = await fetch('/api/create-checkout-session/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': getCookie('csrftoken')
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Accept': 'application/json'
             },
             body: JSON.stringify({ user_id: myDeviceId })
         });
