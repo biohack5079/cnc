@@ -32,6 +32,23 @@ class StripePublicKeyView(View):
         return JsonResponse({'publicKey': public_key})
 
 
+class SubscriptionStatusView(View):
+    """ユーザーの課金状態を返すビュー"""
+    def get(self, request, *args, **kwargs):
+        user_id = request.GET.get('user_id')
+        if not user_id:
+            return JsonResponse({'error': 'User ID is required.'}, status=400)
+
+        try:
+            # user_uuidフィールドでStripeCustomerを検索
+            customer = StripeCustomer.objects.get(user_uuid=user_id)
+            is_subscribed = customer.subscription_status == 'active'
+            return JsonResponse({'is_subscribed': is_subscribed})
+        except StripeCustomer.DoesNotExist:
+            # 顧客情報がない場合は非課金とみなす
+            return JsonResponse({'is_subscribed': False})
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class SavePushSubscriptionView(View):
     """クライアントからのPush購読情報を保存するビュー"""
