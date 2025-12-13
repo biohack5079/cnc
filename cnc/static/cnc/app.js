@@ -1813,13 +1813,16 @@ async function handleSubscribeClick() {
             body: JSON.stringify({ user_id: myDeviceId })
         });
         const session = await response.json();
-        if (session.id) {
+        // サーバーからエラーが返された場合を考慮する
+        if (response.ok && session.id) {
             await stripe.redirectToCheckout({ sessionId: session.id });
         } else {
+            // session.error またはデフォルトのエラーメッセージを表示
             updateStatus(`Could not create checkout session: ${session.error || 'Unknown error'}`, 'red');
         }
-    } catch (error) { // 修正
-        updateStatus(`Error during subscription: ${error}`, 'red');
+    } catch (error) {
+        console.error('Error during subscription process:', error);
+        updateStatus(`An error occurred while trying to subscribe: ${error.message}`, 'red');
     }
 }
 
