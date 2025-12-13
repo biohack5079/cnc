@@ -157,7 +157,8 @@ self.addEventListener('push', event => {
     body: data.body,
     icon: '/static/cnc/icons/icon-192x192.png', // 通知に表示されるアイコン
     badge: '/static/cnc/icons/icon-192x192.png', // Androidでステータスバーに表示される小さなアイコン
-    sound: '/static/cnc/notification.mp3' // iOSで通知音を鳴らす
+    sound: '/static/cnc/notification.mp3', // iOSやAndroidで通知音を鳴らす
+    vibrate: [200, 100, 200] // Androidでバイブレーションを鳴らす (振動200ms, 停止100ms, 振動200ms)
   };
 
   const promiseChain = self.registration.showNotification(title, options)
