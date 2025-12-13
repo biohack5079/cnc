@@ -5,14 +5,8 @@ from django.shortcuts import render
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from .models import PushSubscription
-from .models import StripeCustomer
+from .models import PushSubscription, StripeCustomer
 import stripe
-
-
-class IndexView(View):
-    def get(self, request, *args, **kwargs):
-        return render(request, "cnc/index.html")
 
 
 class VapidPublicKeyView(View):
