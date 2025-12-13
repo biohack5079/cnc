@@ -86,15 +86,13 @@ TEMPLATES = [
 ASGI_APPLICATION = 'cybernetcall.asgi.application'
 WSGI_APPLICATION = 'cybernetcall.wsgi.application'
 
-# REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/1') # /1 などDB番号を指定推奨
-
-redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379") 
+# RedisのURLをsettingsで定義
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [redis_url],
         },
         # 開発中はインメモリバックエンドでもOK
         # "BACKEND": "channels.layers.InMemoryChannelLayer"

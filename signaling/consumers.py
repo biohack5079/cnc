@@ -4,6 +4,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.conf import settings
 from pywebpush import webpush, WebPushException
+import redis.asyncio as redis
 from cnc.models import Notification, PushSubscription
 
 logger = logging.getLogger(__name__)
@@ -260,29 +261,16 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     # --- Redisを使ったオンラインユーザー管理 ---
 
-    @database_sync_to_async
-    def _get_redis_connection(self):
+    async def _get_redis_connection(self):
         """Redis接続を取得するヘルパー関数"""
-        from channels_redis.core import RedisChannelLayer
-        # Channel Layerのhosts設定からRedis接続を直接取得
-        # これはChannelsの内部実装に依存するため、注意が必要
-        # より堅牢な方法としては、DjangoのsettingsからREDIS_URLを読み込み、
-        # redis.asyncio.from_url などで直接接続を確立する
-        channel_layer = self.channel_layer
-        if isinstance(channel_layer, RedisChannelLayer):
-            # channels_redisの内部APIにアクセス
-            # 実際には、channel_layer.connection(0)などで接続を取得できるはず
-            # ここでは簡易的に、RedisChannelLayerの内部にある接続プールから取得する
-            # 厳密には、channels_redisのバージョンや設定に依存する
-            # 開発環境ではInMemoryChannelLayerの場合もあるため、その場合はNoneを返す
-            if hasattr(channel_layer, 'connection_pool'):
-                # connection_poolはリストなので、最初の接続を返す
-                return channel_layer.connection_pool[0]
-        return None
+        # settings.pyからRedisのURLを直接取得して接続する
+        # この方法はchannels_redisの内部実装に依存しないため、より堅牢です。
+        redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
+        return await redis.from_url(redis_url)
 
     async def add_online_user_to_redis(self, user_uuid):
         """ユーザーをオンラインリストにRedisに追加する"""
-        redis_conn = await self._get_redis_connection()
+        redis_conn = await self._get_redis_connection() # _get_redis_connectionは非同期なのでawaitが必要
         if redis_conn:
             await redis_conn.sadd(self.ONLINE_USERS_REDIS_KEY, user_uuid)
             logger.debug(f"Added {user_uuid[:8]} to Redis online users.")
