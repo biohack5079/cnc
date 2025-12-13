@@ -130,16 +130,25 @@ function linkify(text) {
 function renderStatusMessages() {
     if (!statusElement) return;
     statusElement.innerHTML = '';
-    // statusMessages は unshift で追加しているので、そのままの順で表示すると新しいものが上に来る
-    statusMessages.forEach(msgObj => {
+    // 紫色のメッセージを最優先し、それ以外は新しい順にソートする
+    const sortedMessages = [...statusMessages].sort((a, b) => {
+        const aIsPriority = a.color === 'purple';
+        const bIsPriority = b.color === 'purple';
+
+        if (aIsPriority && !bIsPriority) return -1; // a (purple) を先に
+        if (!aIsPriority && bIsPriority) return 1;  // b (purple) を先に
+
+        // 同じ優先度の場合は、新しいものが上に来るようにタイムスタンプで降順ソート
+        return b.timestamp - a.timestamp;
+    });
+
+    sortedMessages.forEach(msgObj => {
         const div = document.createElement('div');
         div.textContent = msgObj.text;
         div.style.color = msgObj.color;
         statusElement.appendChild(div);
     });
     statusElement.style.display = statusMessages.length > 0 ? 'block' : 'none';
-    // 必要であれば、常に一番下にスクロールする (新しいメッセージが下に追加される場合)
-    // statusElement.scrollTop = statusElement.scrollHeight;
 }
 
 function updateStatus(message, color = 'black', withTimestamp = true) {
