@@ -15,6 +15,19 @@ git config --global credential.helper store
 
 ### push
 git add .
-git commit -m "changed"
+git commit -m "change"
 git push -u origin main
+
+
+### 再migration
+# cnc/migrations/ ディレクトリに移動
+cd cnc/migrations/
+# __init__.py 以外のすべてのファイルを削除
+find . -type f -not -name '__init__.py' -delete
+# 元のディレクトリに戻る
+cd ../../
+
+python3 manage.py makemigrations cnc
+python3 manage.py migrate
+python3 manage.py createsuperuser
 

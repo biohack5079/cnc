@@ -16,11 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-
-from cnc import views as cnc_views
-
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path("api/", include("cnc.urls")), # /api/ で始まるAPI関連のURLは cnc.urls に転送
-    path("", cnc_views.index, name="index"), # ルートURLは直接indexビューに接続
+    path("", include("cnc.urls")), # cnc.urlsをルートに含める
 ]
