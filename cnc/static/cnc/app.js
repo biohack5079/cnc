@@ -364,12 +364,13 @@ async function connectWebSocket() {
     const friends = await db.getAll('friends');
     const friendIds = friends.map(f => f.id);
 
-    updateStatus('Connected to signaling server. Registering...', 'blue');
+    updateStatus(`Connected to signaling server. Registering (Subscribed: ${isSubscribed})...`, 'blue');
     sendSignalingMessage({
       type: 'register',
       payload: { 
           uuid: myDeviceId,
-          friends: friendIds // 友達リストを追加
+          friends: friendIds, // 友達リスト
+          is_subscribed: isSubscribed // 課金状態を送信
       }
     });
   };
@@ -381,8 +382,7 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            // isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
-            isSubscribed = true; // 確認用にtrueに固定
+            // isSubscribed はページ読み込み時にAPIから取得するため、ここでは何もしない
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
@@ -1778,9 +1778,23 @@ function setupEventListeners() {
       });
     }
 
+async function fetchSubscriptionStatus() {
+    if (!myDeviceId) return; // myDeviceIdがない場合は何もしない
+    try {
+        const response = await fetch(`/api/stripe/subscription-status/?user_id=${myDeviceId}`);
+        if (response.ok) {
+            const data = await response.json();
+            isSubscribed = data.is_subscribed;
+        }
+    } catch (error) {
+        console.error('Failed to fetch subscription status:', error);
+        isSubscribed = false; // エラー時は非課金として扱う
+    }
+}
+
 async function handleSubscribeClick() {
     // サーバーから公開鍵を取得
-    const keyResponse = await fetch('/stripe/public-key/');
+    const keyResponse = await fetch('/api/stripe/public-key/');
     const keyData = await keyResponse.json();
     const stripePublicKey = keyData.publicKey;
 
@@ -1795,7 +1809,7 @@ async function handleSubscribeClick() {
     const currency = navigator.language.startsWith('ja') ? 'jpy' : 'usd';
 
     try {
-        const response = await fetch('/stripe/create-checkout-session/', {
+        const response = await fetch('/api/stripe/create-checkout-session/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1855,6 +1869,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
   localStorage.setItem('cybernetcall-deviceId', myDeviceId);
+
+  await fetchSubscriptionStatus(); // ページ読み込み時に課金状態を取得
+
   await displayInitialPosts();
   setupEventListeners();
   if (myDeviceId && typeof myDeviceId === 'string' && myDeviceId.length > 0) {
