@@ -1791,6 +1791,9 @@ async function handleSubscribeClick() {
 
     const stripe = Stripe(stripePublicKey);
 
+    // ユーザーのブラウザ言語設定から通貨を決定 (日本語ならjpy, それ以外はusd)
+    const currency = navigator.language.startsWith('ja') ? 'jpy' : 'usd';
+
     try {
         const response = await fetch('/stripe/create-checkout-session/', {
             method: 'POST',
@@ -1799,7 +1802,7 @@ async function handleSubscribeClick() {
                 'X-CSRFToken': getCookie('csrftoken'),
                 'Accept': 'application/json'
             },
-            body: JSON.stringify({ user_id: myDeviceId })
+            body: JSON.stringify({ user_id: myDeviceId, currency: currency })
         });
         const session = await response.json();
         if (session.id) {

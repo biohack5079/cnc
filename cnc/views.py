@@ -6,6 +6,7 @@ from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from .models import PushSubscription
+from datetime import datetime, timezone
 from .models import StripeCustomer
 import stripe
 
@@ -63,6 +64,7 @@ class CreateCheckoutSessionView(View):
         try:
             data = json.loads(request.body)
             user_id = data.get('user_id')
+            currency = data.get('currency', 'usd').lower() # デフォルトはusd
             if not user_id:
                 return HttpResponseBadRequest("User ID is required.")
 
@@ -78,13 +80,19 @@ class CreateCheckoutSessionView(View):
                  # Stripe APIでエラーが発生した場合など
                  return JsonResponse({'error': str(e)}, status=500)
 
+            # 通貨に応じて価格IDを選択
+            if currency == 'usd':
+                price_id = settings.STRIPE_PRICE_ID_USD
+            else:
+                price_id = settings.STRIPE_PRICE_ID_JPY
+
 
             checkout_session = stripe.checkout.Session.create(
                 customer=customer.stripe_customer_id,
                 payment_method_types=['card'],
                 line_items=[
                     {
-                        'price': settings.STRIPE_PRICE_ID,
+                        'price': price_id,
                         'quantity': 1,
                     },
                 ],
@@ -102,4 +110,52 @@ class StripeWebhookView(View):
     def post(self, request, *args, **kwargs):
         # Webhookの処理は後で実装します
         # ここでは、Stripeからのリクエストを正常に受け取ったことを示すために200 OKを返します
+        payload = request.body
+        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+        endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
+        event = None
+
+        try:
+            event = stripe.Webhook.construct_event(
+                payload, sig_header, endpoint_secret
+            )
+        except ValueError as e:
+            # 不正なペイロード
+            return HttpResponseBadRequest(status=400)
+        except stripe.error.SignatureVerificationError as e:
+            # 不正な署名
+            return HttpResponseBadRequest(status=400)
+
+        # イベントタイプに応じた処理
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            customer_id = session.get('customer')
+            subscription_id = session.get('subscription')
+            
+            # 顧客IDを使ってStripeCustomerモデルを更新
+            try:
+                customer = StripeCustomer.objects.get(stripe_customer_id=customer_id)
+                customer.stripe_subscription_id = subscription_id
+                customer.subscription_status = 'active' # ステータスを 'active' に
+                
+                # サブスクリプションの詳細を取得して期間終了日を設定
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                customer.current_period_end = datetime.fromtimestamp(subscription.current_period_end, tz=timezone.utc)
+                
+                customer.save()
+            except StripeCustomer.DoesNotExist:
+                # データベースに顧客が存在しない場合のエラーハンドリング
+                pass
+
+        elif event['type'] == 'customer.subscription.deleted':
+            # サブスクリプションがキャンセルされた場合
+            session = event['data']['object']
+            customer_id = session.get('customer')
+            try:
+                customer = StripeCustomer.objects.get(stripe_customer_id=customer_id)
+                customer.subscription_status = 'canceled'
+                customer.save()
+            except StripeCustomer.DoesNotExist:
+                pass
+
         return JsonResponse({'status': 'success'})
