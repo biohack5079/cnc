@@ -25,8 +25,7 @@ let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
 let onlineFriendsCache = new Set();
 let offlineActivityCache = new Set();
-// let isSubscribed = false; // ユーザーの課金状態を保持
-let isSubscribed = true; // 動作確認のため、一時的に課金状態にする
+let isSubscribed = false; // ユーザーの課金状態を保持
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
@@ -423,7 +422,6 @@ async function connectWebSocket() {
         case 'user_online':
             const joinedUUID = message.uuid;
             if (joinedUUID && joinedUUID !== myDeviceId) {
-                await displayFriendList();
                 const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
