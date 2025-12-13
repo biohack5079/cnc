@@ -241,12 +241,12 @@ async function displayFriendList() {
         const aHadOfflineActivity = isSubscribed && offlineActivityCache.has(a.id);
         const bHadOfflineActivity = isSubscribed && offlineActivityCache.has(b.id);
 
-        if (aHadOfflineActivity && !bHadOfflineActivity) return -1; // 不在時活動ありを最優先
-        if (!aHadOfflineActivity && bHadOfflineActivity) return 1;
-        if (aIsOnline && !bIsOnline) return -1;
-        if (!aIsOnline && bIsOnline) return 1;
-        // どちらもオンライン、またはどちらもオフラインの場合は、追加日が新しい順
-        return (b.added || 0) - (a.added || 0);
+        // 1. 不在時アクティビティ > 2. オンライン > 3. オフライン
+        if (aHadOfflineActivity !== bHadOfflineActivity) return aHadOfflineActivity ? -1 : 1;
+        if (aIsOnline !== bIsOnline) return aIsOnline ? -1 : 1;
+
+        // 上記が同じ場合は、追加日が新しい順
+        return new Date(b.added || 0) - new Date(a.added || 0);
     });
 
     friends.forEach(friend => {
@@ -318,12 +318,13 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'friend-id';
 
-    if (hadOfflineActivity && !isOnline) {
-        nameSpan.style.color = 'purple'; // 不在時にオンラインだった友達
+    if (hadOfflineActivity) {
+        nameSpan.style.color = 'purple'; // 不在時にオンラインだった、または現在もオンラインの友達
+        const statusText = isOnline ? `Online now!` : `Was online`;
         const lastSeenText = friend.lastSeen ? `Last seen: ${new Date(friend.lastSeen).toLocaleString()}` : 'Offline';
-        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${lastSeenText})`;
+        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${statusText} - ${lastSeenText})`;
     } else if (isOnline) {
-        nameSpan.style.color = 'green'; // 現在オンラインの友達
+        nameSpan.style.color = 'green';
         const lastSeen = friend.lastSeen ? new Date(friend.lastSeen).toLocaleString() : 'Just now';
         nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (Online since: ${lastSeen})`;
     } else {
@@ -426,20 +427,13 @@ async function connectWebSocket() {
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
                     await updateFriendLastSeen(joinedUUID, new Date()); // 最終ログイン時間を現在時刻で更新
-                    await displayFriendList(); // リストを再描画
+                    await displayFriendList();
+                    // 既存の接続があれば一度閉じてから再接続を試みる
                     if (peers[joinedUUID]) {
-                        if (peers[joinedUUID].connectionState === 'connecting') {
-                          return;
-                      }
-                        const currentState = peers[joinedUUID].connectionState;
-                        if (currentState === 'connected' || currentState === 'connecting') {
-                        } else {
-                            closePeerConnection(joinedUUID);
-                            await createOfferForPeer(joinedUUID);
-                        }
-                    } else {
-                        await createOfferForPeer(joinedUUID);
+                        closePeerConnection(joinedUUID);
                     }
+                    // 友達なので接続を開始する
+                    await createOfferForPeer(joinedUUID);
                 } else {
                     updateStatus(`Peer ${joinedUUID.substring(0,6)} joined (NOT a friend).`, 'gray');
                 }
@@ -455,7 +449,7 @@ async function connectWebSocket() {
              }
             break;
         case 'offer':
-            if (senderUUID) {;
+            if (senderUUID) {
                 await handleOfferAndCreateAnswer(senderUUID, payload.sdp);
             }
             break;
@@ -544,9 +538,10 @@ async function connectWebSocket() {
       }, delay);
   };
   signalingSocket.onerror = (error) => {
+    updateStatus('Signaling socket error. The connection will be closed.', 'red');
+    console.error("WebSocket Error:", error);
     if (signalingSocket && (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING)) {
         signalingSocket.close();
-    } else if (!signalingSocket && !isAttemptingReconnect) {
     }
   };
 }
@@ -706,6 +701,10 @@ async function createPeerConnection(peerUUID) {
           if (peerReconnectInfo[peerUUID] && peerReconnectInfo[peerUUID].isReconnecting) {
             stopPeerReconnect(peerUUID);
           }
+          // 接続が確立したら、不在時アクティビティのキャッシュをクリアしてリストを再描画
+          offlineActivityCache.delete(peerUUID);
+          await displayFriendList();
+
           const connectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected');
           if (connectedPeers.length > 0 && (messageInputElement && !messageInputElement.disabled)) {
           } else if (connectedPeers.length > 0) {
@@ -1780,7 +1779,7 @@ function setupEventListeners() {
 
 async function handleSubscribeClick() {
     // サーバーから公開鍵を取得
-    const keyResponse = await fetch('/api/get_stripe_public_key/');
+    const keyResponse = await fetch('/api/stripe/public-key/'); // 修正
     const keyData = await keyResponse.json();
     const stripePublicKey = keyData.publicKey;
 
@@ -1792,7 +1791,7 @@ async function handleSubscribeClick() {
     const stripe = Stripe(stripePublicKey);
 
     try {
-        const response = await fetch('/api/create-checkout-session/', {
+        const response = await fetch('/api/stripe/create-checkout-session/', { // 修正
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1807,7 +1806,7 @@ async function handleSubscribeClick() {
         } else {
             updateStatus(`Could not create checkout session: ${session.error || 'Unknown error'}`, 'red');
         }
-    } catch (error) {
+    } catch (error) { // 修正
         updateStatus(`Error during subscription: ${error}`, 'red');
     }
 }
