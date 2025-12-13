@@ -757,17 +757,22 @@ async function createPeerConnection(peerUUID) {
               currentAppState = AppState.CONNECTED;
           }
           break;
-        case 'disconnected':
         case 'failed':
-          updateStatus(`Connection with ${peerUUID.substring(0,6)} ${peer.connectionState}`, 'orange');
+          updateStatus(`Connection with ${peerUUID.substring(0,6)} failed. Attempting to reconnect...`, 'orange');
           clearNegotiationTimeout(peerUUID);
+          // 接続が 'failed' になった場合にのみ、積極的に再接続を開始する
           if (await isFriend(peerUUID) && (!peerReconnectInfo[peerUUID] || !peerReconnectInfo[peerUUID].isReconnecting)) {
             if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
                  startPeerReconnect(peerUUID);
             } else {
-                 closePeerConnection(peerUUID);
+                 closePeerConnection(peerUUID); // WSがなければ諦める
             }
           }
+          break;
+        case 'disconnected':
+          updateStatus(`Connection with ${peerUUID.substring(0,6)} disconnected.`, 'orange');
+          clearNegotiationTimeout(peerUUID);
+          // 'disconnected' は一時的な場合があるため、すぐに再接続せず、ブラウザの回復や次の自動接続試行に任せる
           const stillConnectedPeers = Object.values(peers).filter(p => p?.connectionState === 'connected');
           if (stillConnectedPeers.length === 0 && currentAppState !== AppState.CONNECTING) {
               setInteractionUiEnabled(false); currentAppState = AppState.INITIAL; updateStatus('All peers disconnected.', 'orange');
@@ -831,8 +836,10 @@ function setupDataChannelEvents(peerUUID, channel) {
         }
     };
     channel.onerror = (error) => {
-        updateStatus(`Data channel error: ${error}`, 'red');
-        closePeerConnection(peerUUID);
+        // データチャネルのエラーで即座に接続を切断せず、ログに記録するだけにする。
+        // 接続状態の変更は onconnectionstatechange に任せる。
+        console.error(`Data channel error for ${peerUUID}:`, error);
+        updateStatus(`Data channel error with ${peerUUID.substring(0,6)}. Connection may be unstable.`, 'red');
     };
 }
 async function createOfferForPeer(peerUUID, isReconnectAttempt = false) {
