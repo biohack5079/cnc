@@ -238,8 +238,8 @@ async function displayFriendList() {
     friends.sort((a, b) => {
         const aIsOnline = onlineFriendsCache.has(a.id);
         const bIsOnline = onlineFriendsCache.has(b.id);
-        const aHadOfflineActivity = isSubscribed && offlineActivityCache.has(a.id);
-        const bHadOfflineActivity = isSubscribed && offlineActivityCache.has(b.id);
+        const aHadOfflineActivity = offlineActivityCache.has(a.id);
+        const bHadOfflineActivity = offlineActivityCache.has(b.id);
 
         // 1. 不在時アクティビティ > 2. オンライン > 3. オフライン
         if (aHadOfflineActivity !== bHadOfflineActivity) return aHadOfflineActivity ? -1 : 1;
@@ -251,7 +251,7 @@ async function displayFriendList() {
 
     friends.forEach(friend => {
         const isOnline = onlineFriendsCache.has(friend.id);
-        const hadOfflineActivity = isSubscribed && offlineActivityCache.has(friend.id);
+        const hadOfflineActivity = offlineActivityCache.has(friend.id);
         displaySingleFriend(friend, isOnline, hadOfflineActivity);
     });
   } catch (error) {
@@ -390,12 +390,10 @@ async function connectWebSocket() {
                     if (notification.type === 'missed_call') {
                         displayMissedCallNotification(notification.sender, notification.timestamp);
                     } else if (notification.type === 'friend_online') {
-                        if (isSubscribed) { // 課金ユーザーのみ足跡機能を処理
-                            // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
-                            await updateFriendLastSeen(notification.sender, notification.timestamp);
-                            offlineActivityCache.add(notification.sender);
-                            updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
-                        }
+                        // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
+                        await updateFriendLastSeen(notification.sender, notification.timestamp);
+                        offlineActivityCache.add(notification.sender);
+                        updateStatus(`Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`, 'purple');
                     }
                 }
             }

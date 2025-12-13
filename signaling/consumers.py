@@ -117,7 +117,6 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
         friends_list = payload.get('friends', [])
 
-        # このロジックは、handle_registerの最後に移動し、
         # 自分がオンラインになったことをオフラインの友達に通知する
         await self.notify_offline_friends_of_my_online_status(self.user_uuid, friends_list)
 
