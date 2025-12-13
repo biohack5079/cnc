@@ -77,49 +77,53 @@ class SignalingConsumer(AsyncWebsocketConsumer):
     async def handle_register(self, payload):
         """ユーザー登録と通知の送信を処理"""
         user_uuid = payload.get('uuid')
-        if not user_uuid:
-            return
+        try:
+            if not user_uuid:
+                logger.warning("handle_register called without a user_uuid in payload.")
+                await self.close(code=4000)
+                return
 
-        self.user_uuid = user_uuid
+            self.user_uuid = user_uuid
 
-        # ユーザー固有のグループと、全体通知用のグループに参加
-        await self.channel_layer.group_add(self.user_uuid, self.channel_name)
-        await self.channel_layer.group_add(self.broadcast_group_name, self.channel_name)
-        # Redisにオンラインユーザーとして追加
-        await self.add_online_user_to_redis(self.user_uuid)
+            # ユーザー固有のグループと、全体通知用のグループに参加
+            await self.channel_layer.group_add(self.user_uuid, self.channel_name)
+            await self.channel_layer.group_add(self.broadcast_group_name, self.channel_name)
+            # Redisにオンラインユーザーとして追加
+            await self.add_online_user_to_redis(self.user_uuid)
 
-        logger.info(f"Registered user {self.user_uuid} and added to groups.")
+            logger.info(f"Registered user {self.user_uuid} and added to groups.")
 
-        # 未配信の通知を取得
-        notifications = await self.get_undelivered_notifications(self.user_uuid)
+            # 未配信の通知を取得
+            notifications = await self.get_undelivered_notifications(self.user_uuid)
 
-        # 登録完了メッセージを送信（通知も含む）
-        await self.send(text_data=json.dumps({
-            "type": "registered",
-            "payload": {
-                "uuid": self.user_uuid,
-                "notifications": notifications  # 通知データをペイロードに追加
-            }
-        }))
+            # 登録完了メッセージを送信（通知も含む）
+            await self.send(text_data=json.dumps({
+                "type": "registered",
+                "payload": {
+                    "uuid": self.user_uuid,
+                    "notifications": notifications  # 通知データをペイロードに追加
+                }
+            }))
 
-        # 配信済みにマーク
-        if notifications:
-            await self.mark_notifications_as_delivered(self.user_uuid)
+            # 配信済みにマーク
+            if notifications:
+                await self.mark_notifications_as_delivered(self.user_uuid)
 
-        # 他のユーザーに 'user_joined' をブロードキャスト
-        await self.broadcast({
-            'type': 'user_joined',
-            'uuid': self.user_uuid
-        }, exclude_self=True)
+            # 他のユーザーに 'user_joined' をブロードキャスト
+            await self.broadcast({
+                'type': 'user_joined',
+                'uuid': self.user_uuid
+            }, exclude_self=True)
 
         # --- オフラインの友達に自分がオンラインになったことをPush通知で知らせる ---
         # 注: この機能は、クライアントが自分の友達リストをサーバーに送ることで実現できます。
         #     今回はクライアント側の改修を最小限にするため、コメントアウトしています。
         #     この機能を有効にするには、app.jsのregisterメッセージに友達リストを含める改修が必要です。
-        friends_list = payload.get('friends', [])
-
-        # 自分がオンラインになったことをオフラインの友達に通知する
-        await self.notify_offline_friends_of_my_online_status(self.user_uuid, friends_list)
+            friends_list = payload.get('friends', [])
+            await self.notify_offline_friends_of_my_online_status(self.user_uuid, friends_list)
+        except Exception as e:
+            logger.exception(f"Error during registration for user {user_uuid}: {e}")
+            await self.close(code=4001) # Use a custom error code
 
 
     async def handle_call_request(self, payload):
