@@ -31,3 +31,8 @@ python3 manage.py makemigrations cnc
 python3 manage.py migrate
 python3 manage.py createsuperuser
 
+
+カード番号	4242 4242 4242 4242
+有効期限	未来の日付であれば何でも構いません (例: 12 / 30)
+CVC	任意の3桁の数字 (例: 123)
+
