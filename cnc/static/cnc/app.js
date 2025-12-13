@@ -37,6 +37,41 @@ const NEGOTIATION_TIMEOUT_MS = 3000;
 let wsReconnectAttempts = 0;
 const MAX_WS_RECONNECT_ATTEMPTS = 10;
 const INITIAL_WS_RECONNECT_DELAY_MS = 2000;
+
+// i18n (Internationalization) support
+const i18n = {
+    en: {
+        friends: "Friends",
+        noFriends: "No friends added yet. Scan their QR code!",
+        onlineNow: "Online now!",
+        wasOnline: "Was online",
+        lastSeen: "Last seen",
+        offline: "Offline",
+        onlineSince: "Online since",
+        justNow: "Just now",
+        call: "Call",
+        missedCallFrom: "Missed call from",
+        at: "at",
+    },
+    ja: {
+        friends: "友達",
+        noFriends: "まだ友達がいません。QRコードをスキャンしてください！",
+        onlineNow: "オンライン",
+        wasOnline: "不在着信",
+        lastSeen: "最終接続",
+        offline: "オフライン",
+        onlineSince: "接続",
+        justNow: "たった今",
+        call: "通話",
+        missedCallFrom: "不在着信 from",
+        at: "at", // 必要に応じて変更
+    }
+};
+
+function getLang() {
+    return navigator.language.startsWith('ja') ? 'ja' : 'en';
+}
+
 const MAX_WS_RECONNECT_DELAY_MS = 5000;
 let wsReconnectTimer = null;
 let isAttemptingReconnect = false;
@@ -226,11 +261,12 @@ async function updateFriendLastSeen(friendId, seenTime = null) {
 async function displayFriendList() {
   if (!dbPromise || !friendListElement) return;
   try {
+    const lang = getLang();
     const db = await dbPromise;
     let friends = await db.getAll('friends');
-    friendListElement.innerHTML = '<h3>Friends</h3>';
+    friendListElement.innerHTML = `<h3>${i18n[lang].friends}</h3>`;
     if (friends.length === 0) {
-        friendListElement.innerHTML += '<p>No friends added yet. Scan their QR code!</p>';
+        friendListElement.innerHTML += `<p>${i18n[lang].noFriends}</p>`;
         return;
     }
 
@@ -312,6 +348,7 @@ async function handleDeletePost(event) {
 function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     if (!friendListElement) return;
     const div = document.createElement('div');
+    const lang = getLang();
     div.className = 'friend-item';
     div.dataset.friendId = friend.id;
 
@@ -320,21 +357,21 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
 
     if (hadOfflineActivity) {
         nameSpan.style.color = 'purple'; // 不在時にオンラインだった、または現在もオンラインの友達
-        const statusText = isOnline ? `Online now!` : `Was online`;
-        const lastSeenText = friend.lastSeen ? `Last seen: ${new Date(friend.lastSeen).toLocaleString()}` : 'Offline';
+        const statusText = isOnline ? i18n[lang].onlineNow : i18n[lang].wasOnline;
+        const lastSeenText = friend.lastSeen ? `${i18n[lang].lastSeen}: ${new Date(friend.lastSeen).toLocaleString()}` : i18n[lang].offline;
         nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${statusText} - ${lastSeenText})`;
     } else if (isOnline) {
         nameSpan.style.color = 'green';
-        const lastSeen = friend.lastSeen ? new Date(friend.lastSeen).toLocaleString() : 'Just now';
-        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (Online since: ${lastSeen})`;
+        const lastSeen = friend.lastSeen ? new Date(friend.lastSeen).toLocaleString() : i18n[lang].justNow;
+        nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${i18n[lang].onlineSince}: ${lastSeen})`;
     } else {
         nameSpan.style.color = 'inherit'; // オフラインの友達
-        const lastSeenText = friend.lastSeen ? `Last seen: ${new Date(friend.lastSeen).toLocaleString()}` : 'Offline';
+        const lastSeenText = friend.lastSeen ? `${i18n[lang].lastSeen}: ${new Date(friend.lastSeen).toLocaleString()}` : i18n[lang].offline;
         nameSpan.textContent = `ID: ${friend.id.substring(0, 8)}... (${lastSeenText})`;
     }
 
     const callFriendButton = document.createElement('button');
-    callFriendButton.textContent = '📞 Call';
+    callFriendButton.textContent = `📞 ${i18n[lang].call}`;
     callFriendButton.dataset.friendId = friend.id;
     callFriendButton.addEventListener('click', handleCallFriendClick);
     callFriendButton.disabled = !isOnline || !signalingSocket || signalingSocket.readyState !== WebSocket.OPEN || currentAppState === AppState.CONNECTING || currentAppState === AppState.CONNECTED;
@@ -1708,9 +1745,10 @@ let unreadCount = 0;
 
 function displayMissedCallNotification(senderId, timestamp) {
     if (!statusElement) return;
+    const lang = getLang();
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString();
-    const message = `📞 Missed call from ${senderId.substring(0, 6)} at ${timeString}`;
+    const message = `📞 ${i18n[lang].missedCallFrom} ${senderId.substring(0, 6)} ${i18n[lang].at} ${timeString}`;
     // updateStatus を使って、他のステータスメッセージと同様に表示する
     updateStatus(message, 'purple'); // 紫色などで目立たせる
 
@@ -1804,7 +1842,7 @@ async function handleSubscribeClick() {
     const stripe = Stripe(stripePublicKey);
 
     // ユーザーのブラウザ言語設定から通貨を決定 (日本語ならjpy, それ以外はusd)
-    const currency = navigator.language.startsWith('ja') ? 'jpy' : 'usd';
+    const currency = getLang() === 'ja' ? 'jpy' : 'usd';
 
     try {
         const response = await fetch('/api/stripe/create-checkout-session/', {
