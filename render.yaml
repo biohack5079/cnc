@@ -6,6 +6,12 @@ databases:
     user: django_user
 
 services:
+  - type: redis
+    name: cnc-pwa-redis
+    region: singapore
+    plan: free
+    maxmemoryPolicy: allkeys-lfu
+
   - type: web
     name: cnc-pwa
     env: python
@@ -22,6 +28,10 @@ services:
         fromDatabase:
           name: cnc-pwa_db
           property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: cnc-pwa-redis
       - key: SECRET_KEY
         generateValue: true
       - key: WEB_CONCURRENCY
