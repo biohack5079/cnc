@@ -539,39 +539,40 @@ async function connectWebSocket() {
     }
   };
   signalingSocket.onclose = async (event) => {
-    const code = event.code;
-    const reason = event.reason;
-    console.log(`WebSocket disconnected: Code=${code}, Reason='${reason}', Current Attempts=${wsReconnectAttempts}`);
-    const socketInstanceThatClosed = event.target;
-    if (socketInstanceThatClosed) {
-        socketInstanceThatClosed.onopen = null;
-        socketInstanceThatClosed.onmessage = null;
-        socketInstanceThatClosed.onerror = null;
-        socketInstanceThatClosed.onclose = null;
-    }
-    if (signalingSocket !== socketInstanceThatClosed && signalingSocket !== null) {
-        return;
+    // 接続が意図せず切れた場合のみ再接続を試みる
+    // 1000 (Normal Closure) や 1001 (Going Away) はユーザーがページを離れた場合など。
+    if (event.code !== 1000 && event.code !== 1001) {
+        handleWebSocketReconnect();
+    } else {
+        updateStatus('Signaling connection closed.', 'orange');
     }
     signalingSocket = null;
+    resetPeerConnections();
+    await displayFriendList();
+  };
+  signalingSocket.onerror = (error) => {
+    updateStatus('Signaling socket error.', 'red');
+    console.error("WebSocket Error:", error);
+    // onerrorの後には通常oncloseが呼ばれるので、再接続処理はoncloseに任せる
+    if (signalingSocket && (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING)) {
+        signalingSocket.close();
+    }
+  };
+}
 
-    if ((code === 1000 || code === 1001) && !isAttemptingReconnect) {
-        updateStatus('Signaling connection closed.', 'orange');
-        resetConnection();
-        await displayFriendList();
-        return;
+function handleWebSocketReconnect() {
+    if (isAttemptingReconnect) return; // 既に再接続処理中なら何もしない
+
+    isAttemptingReconnect = true;
+    wsReconnectAttempts = 0;
+    
+    const attemptReconnect = () => {
+      if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
+          updateStatus('Could not reconnect to signaling server. Please check your connection and refresh.', 'red');
+          isAttemptingReconnect = false;
+          return;
       }
-      if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS && isAttemptingReconnect) {
-        updateStatus('Signaling connection lost. Please refresh the page.', 'red');
-        resetConnection();
-        await displayFriendList();
-        isAttemptingReconnect = false;
-        wsReconnectAttempts = 0;
-        return;
-      }
-      if (!isAttemptingReconnect) {
-        isAttemptingReconnect = true;
-        wsReconnectAttempts = 0;
-      }
+
       wsReconnectAttempts++;
       let delay = INITIAL_WS_RECONNECT_DELAY_MS * Math.pow(1.5, wsReconnectAttempts - 1);
       delay = Math.min(delay, MAX_WS_RECONNECT_DELAY_MS);
@@ -579,20 +580,14 @@ async function connectWebSocket() {
       Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID));
       Object.values(dataChannels).forEach(channel => { if (channel && channel.readyState !== 'closed') channel.close(); });
       dataChannels = {};
-      setInteractionUiEnabled(false);
-      currentAppState = AppState.CONNECTING;
+
       if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
       wsReconnectTimer = setTimeout(async () => {
-        await connectWebSocket();
+          await connectWebSocket();
+          // connectWebSocketが成功すれば onopen で isAttemptingReconnect は false になる
       }, delay);
-  };
-  signalingSocket.onerror = (error) => {
-    updateStatus('Signaling socket error. The connection will be closed.', 'red');
-    console.error("WebSocket Error:", error);
-    if (signalingSocket && (signalingSocket.readyState === WebSocket.OPEN || signalingSocket.readyState === WebSocket.CONNECTING)) {
-        signalingSocket.close();
-    }
-  };
+    };
+    attemptReconnect();
 }
 function sendSignalingMessage(message) {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
@@ -1810,13 +1805,7 @@ function setupEventListeners() {
     });
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
-          if ((!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) && !isAttemptingReconnect) {
-            updateStatus('Re-checking connection...', 'blue');
-            if (wsReconnectTimer) {
-              clearTimeout(wsReconnectTimer);
-              wsReconnectTimer = null;
-            }
-            wsReconnectAttempts = 0;
+          if (!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
             connectWebSocket();
           } else if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
             // --- バッジクリア処理 ---
@@ -1974,17 +1963,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   } else {
     updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
   }
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.addEventListener('message', event => {
-      if (event.data && event.data.type === 'APP_ACTIVATED') {
-        if ((!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) && !isAttemptingReconnect) {
-            connectWebSocket();
-        }
-        startAutoConnectFriendsTimer();
-      }
-    });
-  }
-  await connectWebSocket();
+  
+  // Service Workerの準備ができてからWebSocketに接続する
+  navigator.serviceWorker.ready.then(registration => {
+      console.log('Service Worker is active.');
+      connectWebSocket();
+  });
+
   const urlParams = new URLSearchParams(window.location.search);
   const incomingFriendId = urlParams.get('id');
   if (incomingFriendId && incomingFriendId !== myDeviceId) {

@@ -93,6 +93,13 @@ self.addEventListener('fetch', event => {
   // Apply Stale-While-Revalidate strategy for app.js
   if (requestUrl.pathname === '/static/cnc/app.js') {
     // console.log('[Service Worker] Applying Stale-While-Revalidate for:', event.request.url);
+  // Use a "Network falling back to cache" strategy for all requests.
+  // This is generally safer for PWAs where fresh data is important.
+  // For core assets like app.js, it's better to get the latest version.
+  // Offline capability is still maintained if the network fails.
+  if (event.request.mode === 'navigate') {
+    // For navigation requests, always try the network first, then fall back to the cache.
+    // This ensures the user always gets the latest HTML page if online.
     event.respondWith(
       caches.open(CACHE_NAME).then(cache => {
         return cache.match(event.request).then(cachedResponse => {
@@ -130,7 +137,15 @@ self.addEventListener('fetch', event => {
             // }
             return cachedResponse;
           });
+          return caches.match(event.request);
         })
+    );
+  } else {
+    // For other assets (JS, CSS, images), use a cache-first strategy for performance.
+    event.respondWith(
+      caches.match(event.request).then(response => {
+        return response || fetch(event.request);
+      })
     );
   }
 });
