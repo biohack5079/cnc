@@ -24,7 +24,6 @@ let receivedSize = {};
 let incomingFileInfo = {};
 let lastReceivedFileChunkMeta = {};
 let onlineFriendsCache = new Set();
-let offlineActivityCache = new Set();
 let autoConnectFriendsTimer = null;
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
@@ -226,21 +225,14 @@ async function displayFriendList() {
   if (!dbPromise || !friendListElement) return;
   try {
     const db = await dbPromise;
-    const friends = await db.getAll('friends');
-
-    // 'Friends' ヘッダーがなければ追加
-    if (!friendListElement.querySelector('h3')) {
-        const header = document.createElement('h3');
-        header.textContent = 'Friends';
-        friendListElement.prepend(header);
-    }
-
+    let friends = await db.getAll('friends');
+    friendListElement.innerHTML = '<h3>Friends</h3>';
     if (friends.length === 0) {
-        // 既存の友達項目をクリアし、メッセージを表示
-        friendListElement.innerHTML = '<h3>Friends</h3><p>No friends added yet. Scan their QR code!</p>';
+        friendListElement.innerHTML += '<p>No friends added yet. Scan their QR code!</p>';
         return;
     }
 
+    // オンラインの友達を先に、オフラインの友達を後にソート
     friends.sort((a, b) => {
         const aHadOfflineActivity = offlineActivityCache.has(a.id);
         const bHadOfflineActivity = offlineActivityCache.has(b.id);
@@ -255,17 +247,8 @@ async function displayFriendList() {
         return (b.added || 0) - (a.added || 0);
     });
 
-    // 既存の友達要素を一度すべてデタッチ（削除）する
-    const friendElements = Array.from(friendListElement.querySelectorAll('.friend-item'));
-    friendElements.forEach(el => el.remove());
-
-    // ソートされた順序で、すべての友達要素を再作成して追加する
-    friends.forEach(friend => {
-        const isOnline = onlineFriendsCache.has(friend.id);
-        const hadOfflineActivity = offlineActivityCache.has(friend.id);
-        // 常に新しい要素を作成して追加する
-        displaySingleFriend(friend, isOnline, hadOfflineActivity);
-    });
+    friends.forEach(friend => displaySingleFriend(friend, onlineFriendsCache.has(friend.id), offlineActivityCache.has(friend.id)));
+  } catch (error) {
   }
 }
 async function displayInitialPosts() {
@@ -320,25 +303,12 @@ async function handleDeletePost(event) {
     });
     broadcastMessage(postDeleteMessage);
 }
-
-// 既存の友達要素を更新する関数
-function updateSingleFriend(div, friend, isOnline, hadOfflineActivity) {
-    // displaySingleFriend のロジックを再利用するため、一度中身をクリアして再生成
-    div.innerHTML = '';
-    populateFriendElement(div, friend, isOnline, hadOfflineActivity);
-}
 function displaySingleFriend(friend, isOnline, hadOfflineActivity) {
     if (!friendListElement) return;
     const div = document.createElement('div');
     div.className = 'friend-item';
     div.dataset.friendId = friend.id;
 
-    const nameSpan = document.createElement('span');
-    populateFriendElement(div, friend, isOnline, hadOfflineActivity);
-    friendListElement.appendChild(div);
-}
-
-function populateFriendElement(div, friend, isOnline, hadOfflineActivity) {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'friend-id';
 
@@ -364,6 +334,7 @@ function populateFriendElement(div, friend, isOnline, hadOfflineActivity) {
 
     div.appendChild(nameSpan);
     div.appendChild(callFriendButton);
+    friendListElement.appendChild(div);
 }
 async function connectWebSocket() {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
@@ -442,12 +413,12 @@ async function connectWebSocket() {
         case 'user_online':
             const joinedUUID = message.uuid;
             if (joinedUUID && joinedUUID !== myDeviceId) {
+                await displayFriendList();
                 const friendExists = await isFriend(joinedUUID);
                 if (friendExists) {
                     onlineFriendsCache.add(joinedUUID);
                     await updateFriendLastSeen(joinedUUID, new Date()); // 最終ログイン時間を現在時刻で更新
-                    // 足跡情報を保持したままリストを再描画
-                    await displayFriendList(); 
+                    await displayFriendList(); // リストを再描画
                     if (peers[joinedUUID]) {
                         if (peers[joinedUUID].connectionState === 'connecting') {
                           return;
@@ -1800,8 +1771,8 @@ function setupEventListeners() {
     }
 
 async function handleSubscribeClick() {
-    // TODO: 下の "YOUR_STRIPE_PUBLISHABLE_KEY" をStripeダッシュボードから取得したご自身の「公開可能キー」に置き換えてください。
-    const stripePublishableKey = "pk_test_51RV3X8BCbZIvrNaJzce48iOyMd8xMVxzD3duWHzuotHVMnM4dhFHuxetabWUHW8cT9zJEJv0v9CtZE1N3BlDSUGw00Ysl8vg62"; // 例: "pk_test_..."
+    // TODO: このキーをStripeダッシュボードから取得したご自身の公開可能キーに置き換えてください
+    const stripePublishableKey = "price_1Scnx8BCbZIvrNaJwK8oUqeW"; 
     const stripe = Stripe(stripePublishableKey);
 
     try {
