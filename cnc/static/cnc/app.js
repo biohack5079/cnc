@@ -1780,7 +1780,7 @@ function setupEventListeners() {
 
 async function handleSubscribeClick() {
     // サーバーから公開鍵を取得
-    const keyResponse = await fetch('/api/stripe/public-key/'); // 修正
+    const keyResponse = await fetch('/stripe/public-key/');
     const keyData = await keyResponse.json();
     const stripePublicKey = keyData.publicKey;
 
@@ -1792,7 +1792,7 @@ async function handleSubscribeClick() {
     const stripe = Stripe(stripePublicKey);
 
     try {
-        const response = await fetch('/api/stripe/create-checkout-session/', { // 修正
+        const response = await fetch('/stripe/create-checkout-session/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
