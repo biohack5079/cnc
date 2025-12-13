@@ -19,5 +19,6 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path("api/", include("cnc.urls")), # /api/ で始まるURLを cnc.urls に転送
     path("", include("cnc.urls")),
 ]
