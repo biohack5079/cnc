@@ -1952,23 +1952,50 @@ async function main() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // DOM要素の取得はここで行う
+    qrElement = document.getElementById('qrcode');
+    statusElement = document.getElementById('connectionStatus');
+    // ... (他の要素も同様に取得)
+    // (前の修正からこのブロックをここに移動)
+    qrReaderElement = document.getElementById('qr-reader');
+    qrResultsElement = document.getElementById('qr-reader-results');
+    localVideoElement = document.getElementById('localVideo');
+    remoteVideosContainer = document.getElementById('remoteVideosContainer');
+    messageAreaElement = document.getElementById('messageArea');
+    postAreaElement = document.getElementById('postArea');
+    incomingCallModal = document.getElementById('incomingCallModal');
+    callerIdElement = document.getElementById('callerId');
+    acceptCallButton = document.getElementById('acceptCallButton');
+    rejectCallButton = document.getElementById('rejectCallButton');
+    friendListElement = document.getElementById('friendList');
+    messageInputElement = document.getElementById('messageInput');
+    sendMessageButton = document.getElementById('sendMessage');
+    postInputElement = document.getElementById('postInput');
+    sendPostButton = document.getElementById('sendPost');
+    fileInputElement = document.getElementById('fileInput');
+    sendFileButton = document.getElementById('sendFile');
+    fileTransferStatusElement = document.getElementById('file-transfer-status');
+    callButton = document.getElementById('callButton');
+    videoButton = document.getElementById('videoButton');
+    startScanButton = document.getElementById('startScanButton');
+    if (!remoteVideosContainer) {
+        remoteVideosContainer = document.querySelector('.video-scroll-container');
+    }
+
+    // Service Workerの登録
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/static/cnc/service-worker.js')
             .then(registration => {
                 console.log('Service Worker registered successfully.');
-                // Service Workerの準備ができてからメイン処理を開始
-                return navigator.serviceWorker.ready;
-            })
-            .then(readyRegistration => {
-                main(); // メイン処理の開始
             })
             .catch(error => {
                 console.error('Service Worker registration failed:', error);
                 updateStatus(`Offline features unavailable: ${error.message}`, 'orange');
-                main(); // Service Workerがなくてもアプリは起動する
             });
     } else {
         updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
-        main(); // Service Workerがなくてもアプリは起動する
     }
+
+    // DOMの準備ができたら、Service Workerの登録とは非同期にメイン処理を開始する
+    main();
 });

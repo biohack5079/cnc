@@ -62,17 +62,7 @@ self.addEventListener('activate', event => {
       }))
     ).then(() => {
       // Take control of uncontrolled clients (pages) immediately
-      console.log('[Service Worker] Claiming clients');
-      return self.clients.claim().then(() => {
-        // After claiming clients, send a message to all controlled clients
-        // This can be used by the app to know a new SW is active or app was launched
-        self.clients.matchAll().then(clients => {
-          clients.forEach(client => {
-            console.log('[Service Worker] Sending APP_ACTIVATED message to client:', client.id);
-            client.postMessage({ type: 'APP_ACTIVATED', newSW: true });
-          });
-        });
-      });
+      return self.clients.claim();
     })
   );
 });
