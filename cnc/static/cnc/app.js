@@ -473,6 +473,10 @@ async function connectWebSocket() {
                     onlineFriendsCache.add(joinedUUID);
                     await updateFriendLastSeen(joinedUUID, new Date()); // 最終ログイン時間を現在時刻で更新
                     await displayFriendList();
+                    // アプリがフォアグラウンドの場合に音を鳴らす
+                    if (document.visibilityState === 'visible') {
+                        playNotificationSound();
+                    }
                     // 既存の接続があれば一度閉じてから再接続を試みる
                     if (peers[joinedUUID]) {
                         closePeerConnection(joinedUUID, true); // silent close

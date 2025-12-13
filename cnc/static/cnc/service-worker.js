@@ -15,6 +15,7 @@ const urlsToCache = [
   '/static/cnc/icons/icon-192x192.png',
   '/static/cnc/icons/icon-512x512.png',
   '/static/cnc/icons/icon-maskable-512x512.png', // Also cache maskable icon
+  '/static/cnc/notification.mp3', // 通知音ファイルをキャッシュに追加
   // External libraries loaded from CDNs in index.html
   'https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js',
@@ -155,7 +156,8 @@ self.addEventListener('push', event => {
   const options = {
     body: data.body,
     icon: '/static/cnc/icons/icon-192x192.png', // 通知に表示されるアイコン
-    badge: '/static/cnc/icons/icon-192x192.png' // Androidでステータスバーに表示される小さなアイコン
+    badge: '/static/cnc/icons/icon-192x192.png', // Androidでステータスバーに表示される小さなアイコン
+    sound: '/static/cnc/notification.mp3' // iOSで通知音を鳴らす
   };
 
   const promiseChain = self.registration.showNotification(title, options)
