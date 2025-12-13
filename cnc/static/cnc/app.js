@@ -1877,6 +1877,34 @@ async function handleSubscribeClick() {
 async function main() {
   updateStatus('Initializing...', 'black');
 
+  // DOM要素の取得をmain関数の最初に移動
+  qrElement = document.getElementById('qrcode');
+  statusElement = document.getElementById('connectionStatus');
+  qrReaderElement = document.getElementById('qr-reader');
+  qrResultsElement = document.getElementById('qr-reader-results');
+  localVideoElement = document.getElementById('localVideo');
+  remoteVideosContainer = document.getElementById('remoteVideosContainer');
+  messageAreaElement = document.getElementById('messageArea');
+  postAreaElement = document.getElementById('postArea');
+  incomingCallModal = document.getElementById('incomingCallModal');
+  callerIdElement = document.getElementById('callerId');
+  acceptCallButton = document.getElementById('acceptCallButton');
+  rejectCallButton = document.getElementById('rejectCallButton');
+  friendListElement = document.getElementById('friendList');
+  messageInputElement = document.getElementById('messageInput');
+  sendMessageButton = document.getElementById('sendMessage');
+  postInputElement = document.getElementById('postInput');
+  sendPostButton = document.getElementById('sendPost');
+  fileInputElement = document.getElementById('fileInput');
+  sendFileButton = document.getElementById('sendFile');
+  fileTransferStatusElement = document.getElementById('file-transfer-status');
+  callButton = document.getElementById('callButton');
+  videoButton = document.getElementById('videoButton');
+  startScanButton = document.getElementById('startScanButton');
+  if (!remoteVideosContainer) {
+      remoteVideosContainer = document.querySelector('.video-scroll-container');
+  }
+
   myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
   localStorage.setItem('cybernetcall-deviceId', myDeviceId);
 
@@ -1924,40 +1952,6 @@ async function main() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // DOM要素の取得
-    qrElement = document.getElementById('qrcode');
-    statusElement = document.getElementById('connectionStatus');
-    qrReaderElement = document.getElementById('qr-reader');
-    qrResultsElement = document.getElementById('qr-reader-results');
-    localVideoElement = document.getElementById('localVideo');
-    remoteVideosContainer = document.getElementById('remoteVideosContainer');
-    messageAreaElement = document.getElementById('messageArea');
-    postAreaElement = document.getElementById('postArea');
-    incomingCallModal = document.getElementById('incomingCallModal');
-    callerIdElement = document.getElementById('callerId');
-    acceptCallButton = document.getElementById('acceptCallButton');
-    rejectCallButton = document.getElementById('rejectCallButton');
-    friendListElement = document.getElementById('friendList');
-    messageInputElement = document.getElementById('messageInput');
-    sendMessageButton = document.getElementById('sendMessage');
-    postInputElement = document.getElementById('postInput');
-    sendPostButton = document.getElementById('sendPost');
-    fileInputElement = document.getElementById('fileInput');
-    sendFileButton = document.getElementById('sendFile');
-    fileTransferStatusElement = document.getElementById('file-transfer-status');
-    callButton = document.getElementById('callButton');
-    videoButton = document.getElementById('videoButton');
-    startScanButton = document.getElementById('startScanButton');
-    if (!remoteVideosContainer) {
-        remoteVideosContainer = document.querySelector('.video-scroll-container');
-    }
-    if (statusElement) {
-        statusElement.addEventListener('click', () => {
-            statusElement.classList.toggle('status-expanded');
-        });
-    }
-
-    // Service Workerの登録
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/static/cnc/service-worker.js')
             .then(registration => {
