@@ -24,6 +24,13 @@ class VapidPublicKeyView(View):
         return JsonResponse({'publicKey': public_key})
 
 
+class StripePublicKeyView(View):
+    """Stripeの公開可能キーをクライアントに提供するビュー"""
+    def get(self, request, *args, **kwargs):
+        public_key = settings.STRIPE_PUBLISHABLE_KEY
+        return JsonResponse({'publicKey': public_key})
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class SavePushSubscriptionView(View):
     """クライアントからのPush購読情報を保存するビュー"""
