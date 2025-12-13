@@ -430,7 +430,7 @@ async function connectWebSocket() {
                     await displayFriendList();
                     // 既存の接続があれば一度閉じてから再接続を試みる
                     if (peers[joinedUUID]) {
-                        closePeerConnection(joinedUUID);
+                        closePeerConnection(joinedUUID, true); // silent close
                     }
                     // 友達なので接続を開始する
                     await createOfferForPeer(joinedUUID);
