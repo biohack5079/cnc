@@ -35,7 +35,7 @@ SECRET_KEY = 'django-insecure-vaj*zpu!9^3=8%=_n(*9z39dq29l!mbf49rz(jr62k744wvl7j
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ['cnc-pwa.onrender.com']
+ALLOWED_HOSTS = ['cnc-pwa.onrender.com', '.onrender.com', 'localhost', '127.0.0.1']
 
 
 # Application definition
