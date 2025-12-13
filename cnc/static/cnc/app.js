@@ -1907,18 +1907,7 @@ async function main() {
 
   myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
   localStorage.setItem('cybernetcall-deviceId', myDeviceId);
-
-  // 1. UI要素のセットアップ
-  setupEventListeners();
-  setInteractionUiEnabled(false);
-
-  // 2. データベースとUIの初期表示
-  if (typeof idb === 'undefined' || !dbPromise) {
-      updateStatus("Database features disabled. Offline functionality will be limited.", "orange");
-  } else {
-      await displayInitialPosts();
-      await displayFriendList();
-  }
+  setInteractionUiEnabled(false); // まずUIを無効化
 
   // 3. 課金状態の確認
   await fetchSubscriptionStatus(); // ページ読み込み時に課金状態を取得
@@ -1932,6 +1921,14 @@ async function main() {
     updateStatus("Error: Device ID missing. Cannot generate QR code.", "red");
   }
   
+  // 5. データベースとUIの初期表示
+  if (typeof idb === 'undefined' || !dbPromise) {
+      updateStatus("Database features disabled. Offline functionality will be limited.", "orange");
+  } else {
+      await displayInitialPosts();
+      await displayFriendList();
+  }
+
   // 5. WebSocket接続
   await connectWebSocket();
 
@@ -1952,7 +1949,7 @@ async function main() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // DOM要素の取得はここで行う
+    // 1. DOM要素の取得
     qrElement = document.getElementById('qrcode');
     statusElement = document.getElementById('connectionStatus');
     // ... (他の要素も同様に取得)
@@ -1981,7 +1978,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!remoteVideosContainer) {
         remoteVideosContainer = document.querySelector('.video-scroll-container');
     }
+    if (statusElement) {
+        statusElement.addEventListener('click', () => {
+            statusElement.classList.toggle('status-expanded');
+        });
+    }
 
+    // 2. UIイベントリスナーのセットアップ
+    setupEventListeners();
     // Service Workerの登録
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/static/cnc/service-worker.js')
@@ -1996,6 +2000,6 @@ document.addEventListener('DOMContentLoaded', () => {
         updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
     }
 
-    // DOMの準備ができたら、Service Workerの登録とは非同期にメイン処理を開始する
+    // 3. メイン処理の開始
     main();
 });
