@@ -381,7 +381,8 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
+            // isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
+            isSubscribed = true; // 確認用にtrueに固定
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
