@@ -13,7 +13,7 @@ class PushSubscription(models.Model):
 
 class StripeCustomer(models.Model):
     """ユーザーとStripe顧客IDを関連付けるモデル"""
-    user_uuid = models.CharField(max_length=36, unique=True, help_text="ユーザーの一意なID")
+    user_uuid = models.CharField(max_length=36, primary_key=True, help_text="ユーザーの一意なID (主キー)")
     stripe_customer_id = models.CharField(max_length=255, unique=True)
 
 class UserProfile(models.Model):
