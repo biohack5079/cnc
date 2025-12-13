@@ -381,8 +381,19 @@ async function connectWebSocket() {
       const senderUUID = message.from || message.uuid || payload.uuid;
       switch (messageType) {
         case 'registered':
-            // isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
-            isSubscribed = true; // 確認用にtrueに固定
+            isSubscribed = payload.is_subscribed || false; // サーバーから課金状態を受け取る
+            
+            // トライアル期間に関するメッセージを表示
+            if (payload.is_trial) {
+                const trialEndDate = new Date(payload.trial_ends_at);
+                updateStatus(`You are on a free trial. Premium features are available until ${trialEndDate.toLocaleDateString()}.`, 'blue');
+            } else if (!isSubscribed) {
+                updateStatus('Your free trial has ended. Please subscribe to use premium features.', 'orange');
+            } else {
+                // 課金済みユーザー向けのメッセージ（必要であれば）
+                updateStatus('Thank you for subscribing!', 'green');
+            }
+
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             if (payload.notifications && Array.isArray(payload.notifications)) {
