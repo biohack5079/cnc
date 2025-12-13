@@ -1874,51 +1874,28 @@ async function handleSubscribeClick() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  qrElement = document.getElementById('qrcode');
-  statusElement = document.getElementById('connectionStatus');
-  qrReaderElement = document.getElementById('qr-reader');
-  qrResultsElement = document.getElementById('qr-reader-results');
-  localVideoElement = document.getElementById('localVideo');
-  remoteVideosContainer = document.getElementById('remoteVideosContainer');
-  messageAreaElement = document.getElementById('messageArea');
-  postAreaElement = document.getElementById('postArea');
-  incomingCallModal = document.getElementById('incomingCallModal');
-  callerIdElement = document.getElementById('callerId');
-  acceptCallButton = document.getElementById('acceptCallButton');
-  rejectCallButton = document.getElementById('rejectCallButton');
-  friendListElement = document.getElementById('friendList');
-  messageInputElement = document.getElementById('messageInput');
-  sendMessageButton = document.getElementById('sendMessage');
-  postInputElement = document.getElementById('postInput');
-  sendPostButton = document.getElementById('sendPost');
-  fileInputElement = document.getElementById('fileInput');
-  sendFileButton = document.getElementById('sendFile');
-  fileTransferStatusElement = document.getElementById('file-transfer-status');
-  callButton = document.getElementById('callButton');
-  videoButton = document.getElementById('videoButton');
-  startScanButton = document.getElementById('startScanButton');
-  if (!remoteVideosContainer) {
-    remoteVideosContainer = document.querySelector('.video-scroll-container');
-  }
-  if (statusElement) {
-    statusElement.addEventListener('click', () => {
-      statusElement.classList.toggle('status-expanded');
-    });
-  }
+async function main() {
+  updateStatus('Initializing...', 'black');
 
-  if (typeof idb === 'undefined') {
-      updateStatus("Database features disabled (idb library not loaded).", "orange");
-  } else if (!dbPromise) {
-      updateStatus("Database initialization failed.", "red");
-  }
   myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
   localStorage.setItem('cybernetcall-deviceId', myDeviceId);
 
+  // 1. UI要素のセットアップ
+  setupEventListeners();
+  setInteractionUiEnabled(false);
+
+  // 2. データベースとUIの初期表示
+  if (typeof idb === 'undefined' || !dbPromise) {
+      updateStatus("Database features disabled. Offline functionality will be limited.", "orange");
+  } else {
+      await displayInitialPosts();
+      await displayFriendList();
+  }
+
+  // 3. 課金状態の確認
   await fetchSubscriptionStatus(); // ページ読み込み時に課金状態を取得
 
-  await displayInitialPosts();
-  setupEventListeners();
+  // 4. QRコードの表示
   if (myDeviceId && typeof myDeviceId === 'string' && myDeviceId.length > 0) {
     const myAppUrl = window.location.origin + '/?id=' + myDeviceId;
     updateQrCodeWithValue(myAppUrl);
@@ -1926,50 +1903,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.error("Device ID is not available. Cannot generate QR code.");
     updateStatus("Error: Device ID missing. Cannot generate QR code.", "red");
   }
-  updateStatus('Initializing...', 'black');
-  setInteractionUiEnabled(false);
-  await displayFriendList();
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/cnc/service-worker.js')
-      .then(registration => {
-        registration.onupdatefound = () => {
-          const installingWorker = registration.installing;
-          if (installingWorker) {
-                let refreshing;
-            installingWorker.onstatechange = () => {
-              if (installingWorker.state === 'installed') {
-                if (navigator.serviceWorker.controller) {
-                     if (confirm('A new version of the app is available. Refresh now to get the latest features?')) {
-                       if (registration.waiting) {
-                           registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                       }
-                       navigator.serviceWorker.addEventListener('controllerchange', () => {
-                           if (refreshing) return;
-                           window.location.reload();
-                           refreshing = true;
-                       });
-                     } else {
-                       updateStatus('New version available. Please refresh soon to update.', 'blue');
-                     }
-                }
-              }
-            };
-          }
-        };
-      })
-      .catch(error => {
-        updateStatus(`Service Worker registration error: ${error.message}`, 'red');
-      });
-  } else {
-    updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
-  }
   
-  // Service Workerの準備ができてからWebSocketに接続する
-  navigator.serviceWorker.ready.then(registration => {
-      console.log('Service Worker is active.');
-      connectWebSocket();
-  });
+  // 5. WebSocket接続
+  await connectWebSocket();
 
+  // 6. URLパラメータ（友達追加リンク）の処理
   const urlParams = new URLSearchParams(window.location.search);
   const incomingFriendId = urlParams.get('id');
   if (incomingFriendId && incomingFriendId !== myDeviceId) {
@@ -1977,6 +1915,66 @@ document.addEventListener('DOMContentLoaded', async () => {
       await addFriend(incomingFriendId);
       pendingConnectionFriendId = incomingFriendId;
 
+      // WebSocket接続が確立された後にピア接続を開始する
+      if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+          await createOfferForPeer(pendingConnectionFriendId);
+          pendingConnectionFriendId = null;
+      }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    // DOM要素の取得
+    qrElement = document.getElementById('qrcode');
+    statusElement = document.getElementById('connectionStatus');
+    qrReaderElement = document.getElementById('qr-reader');
+    qrResultsElement = document.getElementById('qr-reader-results');
+    localVideoElement = document.getElementById('localVideo');
+    remoteVideosContainer = document.getElementById('remoteVideosContainer');
+    messageAreaElement = document.getElementById('messageArea');
+    postAreaElement = document.getElementById('postArea');
+    incomingCallModal = document.getElementById('incomingCallModal');
+    callerIdElement = document.getElementById('callerId');
+    acceptCallButton = document.getElementById('acceptCallButton');
+    rejectCallButton = document.getElementById('rejectCallButton');
+    friendListElement = document.getElementById('friendList');
+    messageInputElement = document.getElementById('messageInput');
+    sendMessageButton = document.getElementById('sendMessage');
+    postInputElement = document.getElementById('postInput');
+    sendPostButton = document.getElementById('sendPost');
+    fileInputElement = document.getElementById('fileInput');
+    sendFileButton = document.getElementById('sendFile');
+    fileTransferStatusElement = document.getElementById('file-transfer-status');
+    callButton = document.getElementById('callButton');
+    videoButton = document.getElementById('videoButton');
+    startScanButton = document.getElementById('startScanButton');
+    if (!remoteVideosContainer) {
+        remoteVideosContainer = document.querySelector('.video-scroll-container');
+    }
+    if (statusElement) {
+        statusElement.addEventListener('click', () => {
+            statusElement.classList.toggle('status-expanded');
+        });
     }
 
+    // Service Workerの登録
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/cnc/service-worker.js')
+            .then(registration => {
+                console.log('Service Worker registered successfully.');
+                // Service Workerの準備ができてからメイン処理を開始
+                return navigator.serviceWorker.ready;
+            })
+            .then(readyRegistration => {
+                main(); // メイン処理の開始
+            })
+            .catch(error => {
+                console.error('Service Worker registration failed:', error);
+                updateStatus(`Offline features unavailable: ${error.message}`, 'orange');
+                main(); // Service Workerがなくてもアプリは起動する
+            });
+    } else {
+        updateStatus('Offline features unavailable (Service Worker not supported)', 'orange');
+        main(); // Service Workerがなくてもアプリは起動する
+    }
 });

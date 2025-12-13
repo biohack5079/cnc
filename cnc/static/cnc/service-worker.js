@@ -88,66 +88,20 @@ self.addEventListener('message', event => {
 
 // Event listener for the 'fetch' event (intercepting network requests)
 self.addEventListener('fetch', event => {
-  const requestUrl = new URL(event.request.url);
-
-  // Apply Stale-While-Revalidate strategy for app.js
-  if (requestUrl.pathname === '/static/cnc/app.js') {
-    // console.log('[Service Worker] Applying Stale-While-Revalidate for:', event.request.url);
-  // Use a "Network falling back to cache" strategy for all requests.
-  // This is generally safer for PWAs where fresh data is important.
-  // For core assets like app.js, it's better to get the latest version.
-  // Offline capability is still maintained if the network fails.
+  // Use a "Network falling back to cache" strategy for navigation requests.
   if (event.request.mode === 'navigate') {
-    // For navigation requests, always try the network first, then fall back to the cache.
-    // This ensures the user always gets the latest HTML page if online.
     event.respondWith(
-      caches.open(CACHE_NAME).then(cache => {
-        return cache.match(event.request).then(cachedResponse => {
-          const fetchPromise = fetch(event.request).then(networkResponse => {
-            if (networkResponse && networkResponse.ok) {
-              // console.log('[Service Worker] SWR: Caching new version of', event.request.url);
-              cache.put(event.request, networkResponse.clone());
-            } else if (networkResponse) {
-              // console.warn('[Service Worker] SWR: Network request failed or not ok for', event.request.url, networkResponse.status);
-            } else {
-              // console.warn('[Service Worker] SWR: Network request completely failed for', event.request.url);
-            }
-            return networkResponse;
-          }).catch(error => {
-            // console.error('[Service Worker] SWR: Fetch error for', event.request.url, error);
-            // If network fails, and there's a cached response, it will be used.
-            // If no cached response, this will lead to an error for the client.
-            return undefined; 
-          });
-          // Return cached response if available, otherwise wait for fetchPromise
-          return cachedResponse || fetchPromise;
-        });
-      })
+      fetch(event.request).catch(() => caches.match(event.request))
     );
-  } else {
-    // For all other resources, use Network falling back to cache strategy
-    // console.log('[Service Worker] Applying Network falling back to cache for:', event.request.url);
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => {
-          // console.log('[Service Worker] Network failed, trying cache for:', event.request.url);
-          return caches.match(event.request).then(cachedResponse => {
-            // if (!cachedResponse) {
-            //   console.log('[Service Worker] Not found in cache:', event.request.url);
-            // }
-            return cachedResponse;
-          });
-          return caches.match(event.request);
-        })
-    );
-  } else {
-    // For other assets (JS, CSS, images), use a cache-first strategy for performance.
-    event.respondWith(
-      caches.match(event.request).then(response => {
-        return response || fetch(event.request);
-      })
-    );
+    return;
   }
+
+  // For all other requests (JS, CSS, images, etc.), use a "Cache first" strategy.
+  event.respondWith(
+    caches.match(event.request).then(response => {
+      return response || fetch(event.request);
+    })
+  );
 });
 
 // --- Push通知のイベントリスナーを追加 ---
