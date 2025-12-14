@@ -1,6 +1,5 @@
 from django.db import models
 import uuid
-from django.utils import timezone
 
 # Create your models here.
 
@@ -75,9 +74,6 @@ class StripeCustomer(models.Model):
     
     # 現在の請求期間の終了日時 (Unixタイムスタンプ)
     current_period_end = models.DateTimeField(blank=True, null=True)
-
-    # 顧客情報が作成された日時
-    created_at = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         return f"Stripe Customer for {self.user_uuid[:8]} ({self.subscription_status})"
