@@ -546,8 +546,10 @@ async function connectWebSocket() {
     } else {
         updateStatus('Signaling connection closed.', 'orange');
     }
+    // 全てのピア接続をリセットする
+    Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID, true)); // silent close
+    peers = {};
     signalingSocket = null;
-    resetPeerConnections();
     await displayFriendList();
   };
   signalingSocket.onerror = (error) => {
