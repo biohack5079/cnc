@@ -1530,29 +1530,22 @@ async function toggleAudioCall(targetPeerUUID) {
     }
 }
 async function toggleVideoCall(targetPeerUUID = null) {
-  // ターゲットが指定されていて、まだ接続していない場合は、まず接続を試みる
-  if (targetPeerUUID && (!peers[targetPeerUUID] || peers[targetPeerUUID].connectionState !== 'connected')) {
-    updateStatus(`Connecting to ${targetPeerUUID.substring(0,6)} for a call...`, 'blue');
-    await createOfferForPeer(targetPeerUUID);
-    // 接続が確立するのを少し待つ
-    await new Promise(resolve => setTimeout(resolve, 2000)); 
-    // 接続に失敗していたら中止
-    if (!peers[targetPeerUUID] || peers[targetPeerUUID].connectionState !== 'connected') {
-        updateStatus(`Failed to connect to ${targetPeerUUID.substring(0,6)}. Please try again.`, 'red');
+    // 接続中のピアがいない場合は何もしない
+    const connectedPeers = Object.values(peers).filter(p => p && p.connectionState === 'connected');
+    if (connectedPeers.length === 0 && !localStream) {
+        alert("No one is connected for a video meeting.");
         return;
     }
-  }
-
-  const peersToCall = targetPeerUUID ? { [targetPeerUUID]: peers[targetPeerUUID] } : peers;
 
     if (!localStream) {
+        // ビデオ会議を開始
         try {
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            // 修正: 最初は音声のみで開始する
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
             // デフォルトでビデオはオフにする
             localStream.getVideoTracks().forEach(track => track.enabled = false);
-
             if (localVideoElement) localVideoElement.srcObject = localStream;
-            const renegotiationPromises = Object.entries(peersToCall).map(async ([peerUUID, peer]) => {
+            const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
                 if (peer) {
                     localStream.getTracks().forEach(track => {
                         try {
@@ -1565,13 +1558,14 @@ async function toggleVideoCall(targetPeerUUID = null) {
                 }
             });
             await Promise.all(renegotiationPromises);
-            if(videoButton) videoButton.textContent = '🚫'; // ビデオオフ状態を示す
+            if(videoButton) videoButton.textContent = '🚫'; // カメラオフ状態を示す
             if(callButton) callButton.textContent = 'End Call';
         } catch (error) {
             alert(`Media access error: ${error.message}`);
             localStream = null;
         }
     } else {
+        // ビデオ会議を終了
         localStream.getTracks().forEach(track => track.stop());
         const tracksToRemove = localStream.getTracks();
         localStream = null; // ストリームをクリア
@@ -1613,14 +1607,19 @@ async function createAndSendOfferForRenegotiation(peerUUID, peer) {
     }
 }
 function toggleLocalVideo() {
-    if (localStream) {
+    if (localStream && localStream.getVideoTracks().length > 0) {
         const videoTrack = localStream.getVideoTracks()[0];
-        if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled;
-            if(videoButton) videoButton.textContent = videoTrack.enabled ? '🎥' : '🚫';
+        // enabledプロパティを切り替える
+        videoTrack.enabled = !videoTrack.enabled;
+
+        // ボタンの表示を更新
+        if (videoButton) {
+            videoButton.textContent = videoTrack.enabled ? '🎥' : '🚫';
         }
-      } else {
-      }
+        updateStatus(`Video ${videoTrack.enabled ? 'enabled' : 'disabled'}.`, 'blue');
+    } else {
+        alert("Please start a meeting first to toggle video.");
+    }
 }
 function handleRemoteTrack(peerUUID, track, stream) {
     if (!remoteVideosContainer) {
