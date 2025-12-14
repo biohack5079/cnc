@@ -448,6 +448,8 @@ async function connectWebSocket() {
             currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
             await displayFriendList();
+            // 友達との自動接続を開始する
+            startAutoConnectFriendsTimer();
             if (pendingConnectionFriendId) {
                 await createOfferForPeer(pendingConnectionFriendId);
                 pendingConnectionFriendId = null;
