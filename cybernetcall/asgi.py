@@ -8,14 +8,17 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cybernetcall.settings')
 django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.security.websocket import AllowedHostsOriginValidator
 from channels.auth import AuthMiddlewareStack
 import signaling.routing # signaling アプリのルーティングをインポート
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AuthMiddlewareStack(
-        URLRouter(
-            signaling.routing.websocket_urlpatterns # signaling アプリのルーティングを使用
+    "websocket": AllowedHostsOriginValidator(
+        AuthMiddlewareStack(
+            URLRouter(
+                signaling.routing.websocket_urlpatterns # signaling アプリのルーティングを使用
+            )
         )
     ),
 })

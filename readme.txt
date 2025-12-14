@@ -36,3 +36,8 @@ python3 manage.py createsuperuser
 有効期限	未来の日付であれば何でも構いません (例: 12 / 30)
 CVC	任意の3桁の数字 (例: 123)
 
+### ngrok
+# DATABASE_URL
+DEBUG = env.bool('DJANGO_DEBUG', default=False)
+DEBUG = env.bool('DJANGO_DEBUG', default=True)
+
