@@ -14,7 +14,7 @@ let qrElement, statusElement, qrReaderElement, qrResultsElement, localVideoEleme
 let messageInputElement, sendMessageButton, postInputElement, sendPostButton;
 let fileInputElement, sendFileButton, fileTransferStatusElement;
 let onlineFriendSelector;
-let callButton, videoButton;
+let callButton, videoButton, switchCameraButton;
 let startScanButton;
 let remoteVideosContainer;
 let incomingCallModal, callerIdElement, acceptCallButton, rejectCallButton;
@@ -29,6 +29,7 @@ let onlineFriendsCache = new Set();
 let offlineActivityCache = new Set();
 let isSubscribed = false; // ユーザーの課金状態を保持
 let autoConnectFriendsTimer = null;
+let currentFacingMode = 'user'; // 現在のカメラ向き(user: 前面, environment: 背面)
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
 let iceCandidateQueue = {};
@@ -200,6 +201,7 @@ function setInteractionUiEnabled(enabled) {
     if (sendFileButton) sendFileButton.disabled = disabled;
     if (callButton) callButton.disabled = disabled;
     if (videoButton) videoButton.disabled = disabled;
+    if (switchCameraButton && switchCameraButton.style.display !== 'none') switchCameraButton.disabled = disabled;
 
 }
 async function savePost(post) {
@@ -1587,6 +1589,7 @@ async function toggleVideoCall(targetPeerUUID = null) {
         if(localVideoElement) localVideoElement.srcObject = null;
         if(callButton) callButton.textContent = '📞';
         if(videoButton) videoButton.textContent = '🎥';
+        if(switchCameraButton) switchCameraButton.style.display = 'none';
     }
 }
 async function createAndSendOfferForRenegotiation(peerUUID, peer) {
@@ -1612,13 +1615,59 @@ function toggleLocalVideo() {
         // enabledプロパティを切り替える
         videoTrack.enabled = !videoTrack.enabled;
 
-        // ボタンの表示を更新
+        // UIの表示を更新
         if (videoButton) {
             videoButton.textContent = videoTrack.enabled ? '🎥' : '🚫';
+        }
+        if (switchCameraButton) {
+            switchCameraButton.style.display = videoTrack.enabled ? 'inline-block' : 'none';
         }
         updateStatus(`Video ${videoTrack.enabled ? 'enabled' : 'disabled'}.`, 'blue');
     } else {
         alert("Please start a meeting first to toggle video.");
+    }
+}
+
+async function switchCamera() {
+    if (!localStream || localStream.getVideoTracks().length === 0) {
+        alert("Video is not active. Cannot switch camera.");
+        return;
+    }
+
+    // 次のカメラモードを決定
+    const newFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+    updateStatus(`Switching to ${newFacingMode} camera...`, 'blue');
+
+    try {
+        // 新しいカメラストリームを取得
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: newFacingMode } }
+        });
+        const newVideoTrack = newStream.getVideoTracks()[0];
+
+        // 古いトラックを停止
+        const oldVideoTrack = localStream.getVideoTracks()[0];
+        oldVideoTrack.stop();
+
+        // ストリーム内のトラックを置き換え
+        localStream.removeTrack(oldVideoTrack);
+        localStream.addTrack(newVideoTrack);
+
+        // 各ピア接続のトラックを置き換え (再ネゴシエーション不要)
+        for (const peer of Object.values(peers)) {
+            const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender) {
+                await sender.replaceTrack(newVideoTrack);
+            }
+        }
+
+        currentFacingMode = newFacingMode;
+        updateStatus(`Switched to ${newFacingMode} camera.`, 'green');
+    } catch (error) {
+        console.error("Error switching camera:", error);
+        updateStatus(`Could not switch camera: ${error.message}`, 'red');
+        // エラーが発生した場合は、元のトラックを再開しようと試みるか、ユーザーに通知する
+        alert(`Failed to switch camera. Your device may not have a ${newFacingMode} camera or it's in use.`);
     }
 }
 function handleRemoteTrack(peerUUID, track, stream) {
@@ -1896,6 +1945,7 @@ function setupEventListeners() {
     sendFileButton?.addEventListener('click', handleSendFile);
     callButton?.addEventListener('click', toggleVideoCall);
     videoButton?.addEventListener('click', toggleLocalVideo);
+    switchCameraButton?.addEventListener('click', switchCamera);
     startScanButton?.addEventListener('click', handleStartScanClick);
     acceptCallButton?.addEventListener('click', handleAcceptCall);
     rejectCallButton?.addEventListener('click', handleRejectCall);
@@ -2002,6 +2052,7 @@ async function main() {
   fileTransferStatusElement = document.getElementById('file-transfer-status');
   callButton = document.getElementById('callButton');
   videoButton = document.getElementById('videoButton');
+    switchCameraButton = document.getElementById('switchCameraButton');
   startScanButton = document.getElementById('startScanButton');
   if (!remoteVideosContainer) {
       remoteVideosContainer = document.querySelector('.video-scroll-container');
@@ -2077,6 +2128,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fileTransferStatusElement = document.getElementById('file-transfer-status');
     callButton = document.getElementById('callButton');
     videoButton = document.getElementById('videoButton');
+    switchCameraButton = document.getElementById('switchCameraButton');
     startScanButton = document.getElementById('startScanButton');
     if (!remoteVideosContainer) {
         remoteVideosContainer = document.querySelector('.video-scroll-container');
