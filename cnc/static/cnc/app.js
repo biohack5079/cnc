@@ -14,9 +14,7 @@ let qrElement, statusElement, qrReaderElement, qrResultsElement, localVideoEleme
 let messageInputElement, sendMessageButton, postInputElement, sendPostButton;
 let fileInputElement, sendFileButton, fileTransferStatusElement;
 let onlineFriendSelector;
-let callButton, videoButton, switchCameraButton;
-let startScanButton;
-let remoteVideosContainer;
+let callButton, frontCamButton, backCamButton, startScanButton;let remoteVideosContainer;
 let incomingCallModal, callerIdElement, acceptCallButton, rejectCallButton;
 let currentCallerId = null;
 let friendListElement;
@@ -30,6 +28,8 @@ let offlineActivityCache = new Set();
 let isSubscribed = false; // ユーザーの課金状態を保持
 let autoConnectFriendsTimer = null;
 let currentFacingMode = 'user'; // 現在のカメラ向き(user: 前面, environment: 背面)
+let html5QrCode = null; // QRコードスキャナのインスタンスを保持
+let isScanning = false; // スキャン中かどうかのフラグ
 const AUTO_CONNECT_INTERVAL = 2000;
 let peerReconnectInfo = {};
 let iceCandidateQueue = {};
@@ -200,9 +200,11 @@ function setInteractionUiEnabled(enabled) {
     if (onlineFriendSelector) onlineFriendSelector.disabled = disabled;
     if (sendFileButton) sendFileButton.disabled = disabled;
     if (callButton) callButton.disabled = disabled;
-    if (videoButton) videoButton.disabled = disabled;
-    if (switchCameraButton && switchCameraButton.style.display !== 'none') switchCameraButton.disabled = disabled;
-
+    // ビデオ会議がアクティブな場合のみ、カメラボタンの状態を更新
+    if (localStream) {
+        if (frontCamButton) frontCamButton.disabled = disabled;
+        if (backCamButton) backCamButton.disabled = disabled;
+    }
 }
 async function savePost(post) {
   if (!dbPromise) return;
@@ -1542,26 +1544,19 @@ async function toggleVideoCall(targetPeerUUID = null) {
     if (!localStream) {
         // ビデオ会議を開始
         try {
-            // 修正: 最初は音声のみで開始する
-            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-            // デフォルトでビデオはオフにする
-            localStream.getVideoTracks().forEach(track => track.enabled = false);
-            if (localVideoElement) localVideoElement.srcObject = localStream;
-            const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
-                if (peer) {
-                    localStream.getTracks().forEach(track => {
-                        try {
-                            if (peer.addTrack) {
-                                const sender = peer.addTrack(track, localStream);
-                            } else { console.warn(`peer.addTrack is not supported for ${peerUUID}.`); }
-                        } catch (e) { console.error(`Error adding track to ${peerUUID}:`, e); }
-                    });
-                    await createAndSendOfferForRenegotiation(peerUUID, peer);
-                }
-            });
-            await Promise.all(renegotiationPromises);
-            if(videoButton) videoButton.textContent = '🚫'; // カメラオフ状態を示す
+            // 音声のみでストリームを開始
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            if (localVideoElement) {
+                localVideoElement.srcObject = localStream;
+                localVideoElement.style.display = 'block'; // 音声のみでも表示エリアは確保
+            }
+            // ピアに音声トラックを送信
+            await addTrackToAllPeers(localStream.getAudioTracks()[0]);
+
             if(callButton) callButton.textContent = 'End Call';
+            if(frontCamButton) frontCamButton.style.display = 'inline-block';
+            if(backCamButton) backCamButton.style.display = 'inline-block';
+            updateStatus('Video meeting started (Audio only).', 'green');
         } catch (error) {
             alert(`Media access error: ${error.message}`);
             localStream = null;
@@ -1569,29 +1564,18 @@ async function toggleVideoCall(targetPeerUUID = null) {
     } else {
         // ビデオ会議を終了
         localStream.getTracks().forEach(track => track.stop());
-        const tracksToRemove = localStream.getTracks();
         localStream = null; // ストリームをクリア
-        const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
-            if (peer) {
-                peer.getSenders().forEach(sender => {
-                    if (sender && sender.track && tracksToRemove.includes(sender.track)) {
-                        try {
-                            if (peer.removeTrack) {
-                                peer.removeTrack(sender);
-                            } else { console.warn(`peer.removeTrack is not supported for ${peerUUID}.`); }
-                        } catch (e) { console.error(`Error removing track from ${peerUUID}:`, e); }
-                    }
-                });
-                await createAndSendOfferForRenegotiation(peerUUID, peer);
-            }
-        });
-        await Promise.all(renegotiationPromises);
+        // 全てのピアからトラックを削除するシグナリング（再ネゴシエーション）
+        await removeAllTracksFromAllPeers();
+
         if(localVideoElement) localVideoElement.srcObject = null;
         if(callButton) callButton.textContent = '📞';
-        if(videoButton) videoButton.textContent = '🎥';
-        if(switchCameraButton) switchCameraButton.style.display = 'none';
+        if(frontCamButton) frontCamButton.style.display = 'none';
+        if(backCamButton) backCamButton.style.display = 'none';
+        updateStatus('Video meeting ended.', 'orange');
     }
 }
+
 async function createAndSendOfferForRenegotiation(peerUUID, peer) {
     if (!peer || peer.connectionState !== 'connected') {
         console.warn(`Cannot renegotiate with ${peerUUID}, connection not established.`);
@@ -1609,67 +1593,102 @@ async function createAndSendOfferForRenegotiation(peerUUID, peer) {
         console.error(`Error during renegotiation offer for ${peerUUID}:`, error);
     }
 }
-function toggleLocalVideo() {
-    if (localStream && localStream.getVideoTracks().length > 0) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        // enabledプロパティを切り替える
-        videoTrack.enabled = !videoTrack.enabled;
 
-        // UIの表示を更新
-        if (videoButton) {
-            videoButton.textContent = videoTrack.enabled ? '🎥' : '🚫';
-        }
-        if (switchCameraButton) {
-            switchCameraButton.style.display = videoTrack.enabled ? 'inline-block' : 'none';
-        }
-        updateStatus(`Video ${videoTrack.enabled ? 'enabled' : 'disabled'}.`, 'blue');
+async function handleVideoButtonClick(facingMode) {
+    if (!localStream) {
+        alert("Please start a meeting first (click 📞).");
+        return;
+    }
+    const videoTrack = localStream.getVideoTracks()[0];
+
+    if (videoTrack) {
+        // ビデオが既にオンの場合、オフにする
+        await removeVideo();
     } else {
-        alert("Please start a meeting first to toggle video.");
+        // ビデオがオフの場合、指定されたカメラでオンにする
+        await addVideo(facingMode);
     }
 }
 
-async function switchCamera() {
-    if (!localStream || localStream.getVideoTracks().length === 0) {
-        alert("Video is not active. Cannot switch camera.");
+async function addVideo(facingMode) {
+    if (!localStream) return;
+    // 既にビデオトラックがあれば何もしない
+    if (localStream.getVideoTracks().length > 0) {
+        updateStatus('Video is already on.', 'orange');
         return;
     }
 
-    // 次のカメラモードを決定
-    const newFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
-    updateStatus(`Switching to ${newFacingMode} camera...`, 'blue');
-
     try {
-        // 新しいカメラストリームを取得
-        const newStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { exact: newFacingMode } }
-        });
-        const newVideoTrack = newStream.getVideoTracks()[0];
-
-        // 古いトラックを停止
-        const oldVideoTrack = localStream.getVideoTracks()[0];
-        oldVideoTrack.stop();
-
-        // ストリーム内のトラックを置き換え
-        localStream.removeTrack(oldVideoTrack);
+        updateStatus(`Starting ${facingMode} camera...`, 'blue');
+        const videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode } });
+        const newVideoTrack = videoStream.getVideoTracks()[0];
         localStream.addTrack(newVideoTrack);
+        if (localVideoElement) localVideoElement.srcObject = localStream;
 
-        // 各ピア接続のトラックを置き換え (再ネゴシエーション不要)
-        for (const peer of Object.values(peers)) {
-            const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (sender) {
-                await sender.replaceTrack(newVideoTrack);
-            }
-        }
+        // 全てのピアに新しいビデオトラックを追加
+        await addTrackToAllPeers(newVideoTrack);
 
-        currentFacingMode = newFacingMode;
-        updateStatus(`Switched to ${newFacingMode} camera.`, 'green');
+        currentFacingMode = facingMode;
+        updateStatus(`Video added with ${facingMode} camera.`, 'green');
     } catch (error) {
-        console.error("Error switching camera:", error);
-        updateStatus(`Could not switch camera: ${error.message}`, 'red');
-        // エラーが発生した場合は、元のトラックを再開しようと試みるか、ユーザーに通知する
-        alert(`Failed to switch camera. Your device may not have a ${newFacingMode} camera or it's in use.`);
+        console.error(`Error adding video: ${error}`);
+        updateStatus(`Could not start camera: ${error.message}`, 'red');
     }
 }
+
+async function removeVideo() {
+    if (!localStream) return;
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    try {
+        updateStatus('Stopping video...', 'orange');
+        videoTrack.stop();
+        localStream.removeTrack(videoTrack);
+        if (localVideoElement) localVideoElement.srcObject = localStream;
+
+        // 全てのピアからビデオトラックを削除
+        await removeTrackFromAllPeers(videoTrack);
+
+        updateStatus('Video stopped.', 'blue');
+    } catch (error) {
+        console.error(`Error removing video: ${error}`);
+    }
+}
+
+async function addTrackToAllPeers(track) {
+    const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
+        if (peer && peer.connectionState === 'connected') {
+            peer.addTrack(track, localStream);
+            await createAndSendOfferForRenegotiation(peerUUID, peer);
+        }
+    });
+    await Promise.all(renegotiationPromises);
+}
+
+async function removeTrackFromAllPeers(track) {
+    const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
+        if (peer && peer.connectionState === 'connected') {
+            const sender = peer.getSenders().find(s => s.track === track);
+            if (sender) {
+                peer.removeTrack(sender);
+                await createAndSendOfferForRenegotiation(peerUUID, peer);
+            }
+        }
+    });
+    await Promise.all(renegotiationPromises);
+}
+
+async function removeAllTracksFromAllPeers() {
+    const renegotiationPromises = Object.entries(peers).map(async ([peerUUID, peer]) => {
+        if (peer) {
+            peer.getSenders().forEach(sender => peer.removeTrack(sender));
+            await createAndSendOfferForRenegotiation(peerUUID, peer);
+        }
+    });
+    await Promise.all(renegotiationPromises);
+}
+
 function handleRemoteTrack(peerUUID, track, stream) {
     if (!remoteVideosContainer) {
         console.warn("Remote videos container not found.");
@@ -1721,75 +1740,80 @@ function updateQrCodeWithValue(value) {
     }
 }
 function handleStartScanClick() {
-    if (!window.html5QrCodeScanner || window.html5QrCodeScanner.getState() !== 2 ) {
+    // スキャン中でなければ、指定されたカメラでスキャンを開始する
+    if (!isScanning) {
         startQrScanner();
     } else {
-        console.warn("Scan button clicked but already scanning or scanner not ready.");
+        stopQrScanner();
     }
 }
-function startQrScanner() {
-    if (window.html5QrCodeScanner && window.html5QrCodeScanner.getState() === 2 ) {
+
+async function startQrScanner() {
+    if (isScanning) return; // 既にスキャン中なら何もしない
+
+    if (!qrReaderElement || typeof Html5Qrcode === 'undefined') {
+        updateStatus('QR Scanner library not loaded yet.', 'orange');
         return;
     }
-    if (!qrReaderElement) {
-        console.warn("QR Reader element not available for start.");
-        return;
+
+    if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("qr-reader");
     }
-    if(startScanButton) startScanButton.disabled = true;
-    qrReaderElement.style.display = 'block';
-    if (typeof Html5Qrcode !== 'undefined') {
-        try {
-            if (window.html5QrCodeScanner && typeof window.html5QrCodeScanner.getState === 'function') {
-                 const state = window.html5QrCodeScanner.getState();
-                 if (state === 2 || state === 1 ) {
-                     window.html5QrCodeScanner.stop().catch(e => console.warn("Ignoring error stopping previous scanner:", e));
-                 }
-            } else if (window.html5QrCodeScanner && typeof window.html5QrCodeScanner.clear === 'function') {
-                window.html5QrCodeScanner.clear().catch(e => console.warn("Ignoring error clearing previous scanner:", e));
-            }
-        } catch (e) { console.warn("Error accessing previous scanner state:", e); }
-        try {
-            window.html5QrCodeScanner = new Html5Qrcode("qr-reader");
-        } catch (e) {
-            console.error("Error creating Html5Qrcode instance:", e);
-            updateStatus(`QR Reader initialization error: ${e.message}`, 'red');
-            if(qrReaderElement) qrReaderElement.style.display = 'none';
-            if(startScanButton) startScanButton.disabled = false;
-            return;
+
+    try {
+        if(startScanButton) {
+            startScanButton.textContent = 'Starting...';
+            startScanButton.disabled = true;
         }
-        const qrCodeSuccessCallback = (decodedText, decodedResult) => {
-            updateStatus('QR Scan successful. Processing...', 'blue');
-            window.html5QrCodeScanner.stop().then(ignore => {
-                if(qrReaderElement) qrReaderElement.style.display = 'none';
-                 handleScannedQrData(decodedText);
-            }).catch(err => {
-                 if(qrReaderElement) qrReaderElement.style.display = 'none';
-                 handleScannedQrData(decodedText);
-            }).finally(() => {
-                 if(startScanButton) startScanButton.disabled = false;
-            });
-        };
-        const config = { fps: 10, qrbox: { width: 200, height: 200 } };
-        window.html5QrCodeScanner.start({ facingMode: "environment" }, config, qrCodeSuccessCallback)
-            .catch(err => {
-                console.error(`QR Scanner start error: ${err}`);
-                if (err.name === 'NotAllowedError') {
-                    updateStatus('Camera access denied. Please check settings.', 'red');
-                } else {
-                    updateStatus(`QR scanner error: ${err.message}`, 'red');
-                }
-                if(qrReaderElement) qrReaderElement.style.display = 'none';
-                if(startScanButton) startScanButton.disabled = false;
-            });
-    } else {
-        console.error("Html5Qrcode not loaded.");
+        qrReaderElement.style.display = 'block';
+        updateStatus('Starting QR Scanner...', 'blue');
+
+        await html5QrCode.start(
+            { facingMode: "environment" }, // 背面カメラを使用
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            (decodedText, decodedResult) => {
+                updateStatus('QR Scan successful. Processing...', 'blue');
+                handleScannedQrData(decodedText);
+                stopQrScanner(); // スキャン成功後、自動で停止
+            },
+            (errorMessage) => { /* QRコードが見つからない場合は何もしない */ }
+        );
+
+        isScanning = true;
+        updateStatus('QR Scanner started.', 'blue');
+        if(startScanButton) {
+            startScanButton.textContent = 'Stop Scan';
+            startScanButton.disabled = false;
+        }
+    } catch (err) {
+        updateStatus(`QR Scanner Error: ${err}`, 'red');
         if(qrReaderElement) qrReaderElement.style.display = 'none';
-        if(startScanButton) startScanButton.disabled = false;
-        setTimeout(startQrScanner, 500);
+        if(startScanButton) {
+            startScanButton.textContent = 'Scan QR Code';
+            startScanButton.disabled = false;
+        }
+        isScanning = false; // 状態をリセット
+    }
+}
+
+async function stopQrScanner() {
+    if (!isScanning || !html5QrCode) return;
+
+    try {
+        await html5QrCode.stop();
+        updateStatus('QR Scanner stopped.', 'blue');
+    } catch (err) {
+        console.error("Error stopping QR scanner:", err);
+    } finally {
+        isScanning = false;
+        if(qrReaderElement) qrReaderElement.style.display = 'none';
+        if(startScanButton) {
+            startScanButton.textContent = 'Scan QR Code';
+            startScanButton.disabled = false;
+        }
     }
 }
 async function handleScannedQrData(decodedText) {
-    if(startScanButton) startScanButton.disabled = false;
     try {
         const url = new URL(decodedText);
         const params = new URLSearchParams(url.search);
@@ -1944,9 +1968,10 @@ function setupEventListeners() {
     sendPostButton?.addEventListener('click', handleSendPost);
     sendFileButton?.addEventListener('click', handleSendFile);
     callButton?.addEventListener('click', toggleVideoCall);
-    videoButton?.addEventListener('click', toggleLocalVideo);
-    switchCameraButton?.addEventListener('click', switchCamera);
+    frontCamButton?.addEventListener('click', () => handleVideoButtonClick('user'));
+    backCamButton?.addEventListener('click', () => handleVideoButtonClick('environment'));
     startScanButton?.addEventListener('click', handleStartScanClick);
+
     acceptCallButton?.addEventListener('click', handleAcceptCall);
     rejectCallButton?.addEventListener('click', handleRejectCall);
     messageInputElement?.addEventListener('keypress', (e) => {
@@ -2051,8 +2076,8 @@ async function main() {
   sendFileButton = document.getElementById('sendFile');
   fileTransferStatusElement = document.getElementById('file-transfer-status');
   callButton = document.getElementById('callButton');
-  videoButton = document.getElementById('videoButton');
-    switchCameraButton = document.getElementById('switchCameraButton');
+  frontCamButton = document.getElementById('frontCamButton');
+  backCamButton = document.getElementById('backCamButton');
   startScanButton = document.getElementById('startScanButton');
   if (!remoteVideosContainer) {
       remoteVideosContainer = document.querySelector('.video-scroll-container');
@@ -2127,8 +2152,8 @@ document.addEventListener('DOMContentLoaded', () => {
     sendFileButton = document.getElementById('sendFile');
     fileTransferStatusElement = document.getElementById('file-transfer-status');
     callButton = document.getElementById('callButton');
-    videoButton = document.getElementById('videoButton');
-    switchCameraButton = document.getElementById('switchCameraButton');
+    frontCamButton = document.getElementById('frontCamButton');
+    backCamButton = document.getElementById('backCamButton');
     startScanButton = document.getElementById('startScanButton');
     if (!remoteVideosContainer) {
         remoteVideosContainer = document.querySelector('.video-scroll-container');
