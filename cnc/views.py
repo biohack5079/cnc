@@ -43,10 +43,19 @@ class SubscriptionStatusView(View):
             # user_uuidフィールドでStripeCustomerを検索
             customer = StripeCustomer.objects.get(user_uuid=user_id)
             is_subscribed = customer.subscription_status == 'active'
-            return JsonResponse({'is_subscribed': is_subscribed})
+            # 登録日時を取得。存在しない場合はNone
+            subscription_created_at = customer.created_at.isoformat() if hasattr(customer, 'created_at') else None
+
+            return JsonResponse({
+                'is_subscribed': is_subscribed,
+                'subscription_created_at': subscription_created_at
+            })
         except StripeCustomer.DoesNotExist:
             # 顧客情報がない場合は非課金とみなす
-            return JsonResponse({'is_subscribed': False})
+            return JsonResponse({
+                'is_subscribed': False,
+                'subscription_created_at': None
+            })
 
 
 @method_decorator(csrf_exempt, name='dispatch')

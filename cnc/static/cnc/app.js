@@ -26,6 +26,7 @@ let lastReceivedFileChunkMeta = {};
 let onlineFriendsCache = new Set();
 let offlineActivityCache = new Set();
 let isSubscribed = false; // ユーザーの課金状態を保持
+let subscriptionCreatedAt = null; // ユーザーの課金登録日時を保持
 let autoConnectFriendsTimer = null;
 let currentFacingMode = 'user'; // 現在のカメラ向き(user: 前面, environment: 背面)
 let html5QrCode = null; // QRコードスキャナのインスタンスを保持
@@ -70,6 +71,28 @@ const i18n = {
         at: "at", // 必要に応じて変更
     }
 };
+
+/**
+ * 足跡機能（不在時オンライン通知など）が有効かどうかを判定します。
+ * @returns {boolean} 機能が有効な場合はtrue、そうでない場合はfalse。
+ */
+function isFootprintFeatureEnabled() {
+    // 1. 正式に課金中であれば、常に有効
+    if (isSubscribed) {
+        return true;
+    }
+
+    // 2. 課金登録日があり、現在が無料お試し期間中であれば有効
+    if (subscriptionCreatedAt) {
+        const registrationDate = new Date(subscriptionCreatedAt);
+        const oneMonthLater = new Date(registrationDate.setMonth(registrationDate.getMonth() + 1));
+        const now = new Date();
+        return now < oneMonthLater;
+    }
+
+    // 3. 上記以外は無効
+    return false;
+}
 
 function getLang() {
     return navigator.language.startsWith('ja') ? 'ja' : 'en';
@@ -447,13 +470,14 @@ async function connectWebSocket() {
     const friends = await db.getAll('friends');
     const friendIds = friends.map(f => f.id);
 
-    updateStatus(`Connected to signaling server. Registering (Subscribed: ${isSubscribed})...`, 'blue');
+    const isFeatureEnabled = isFootprintFeatureEnabled();
+    updateStatus(`Connected to signaling server. Registering (Feature Enabled: ${isFeatureEnabled})...`, 'blue');
     sendSignalingMessage({
       type: 'register',
       payload: { 
           uuid: myDeviceId,
           friends: friendIds, // 友達リスト
-          is_subscribed: isSubscribed // 課金状態を送信
+          is_subscribed: isFeatureEnabled // 機能が有効かどうかを送信
       }
     });
   };
@@ -2006,11 +2030,13 @@ async function fetchSubscriptionStatus() {
         const response = await fetch(`/api/stripe/subscription-status/?user_id=${myDeviceId}`);
         if (response.ok) {
             const data = await response.json();
-            isSubscribed = data.is_subscribed;
+            isSubscribed = data.is_subscribed || false;
+            subscriptionCreatedAt = data.subscription_created_at || null;
         }
     } catch (error) {
         console.error('Failed to fetch subscription status:', error);
         isSubscribed = false; // エラー時は非課金として扱う
+        subscriptionCreatedAt = null;
     }
 }
 

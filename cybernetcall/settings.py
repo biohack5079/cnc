@@ -35,8 +35,11 @@ SECRET_KEY = 'django-insecure-vaj*zpu!9^3=8%=_n(*9z39dq29l!mbf49rz(jr62k744wvl7j
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DJANGO_DEBUG', default=False)
 
-ALLOWED_HOSTS = ['cnc-pwa.onrender.com', '.onrender.com', 'localhost', '127.0.0.1', '.ngrok-free.app']
+ALLOWED_HOSTS = ['cnc-pwa.onrender.com', 'localhost', '127.0.0.1']
 
+# または、デバッグモードの時だけ許可するという方法もあります
+if DEBUG:
+    ALLOWED_HOSTS.extend(['.ngrok-free.app', '.onrender.com'])
 
 # Application definition
 
@@ -114,11 +117,16 @@ CHANNEL_LAYERS = {
 #     }
 # }
 
-# settings.py のデータベース設定部分
-default_dburl = "sqlite:///" + str(BASE_DIR / "db.sqlite3")
-DATABASES = {
-    'default': env.db('DATABASE_URL', default=default_dburl)
-}
+# 開発環境(DEBUG=True)ではSQLiteを、本番環境(DEBUG=False)ではDATABASE_URLを使用する
+if DEBUG:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+    DATABASES = {'default': env.db('DATABASE_URL')}
 
 
 # Password validation
