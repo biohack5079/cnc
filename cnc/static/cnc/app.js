@@ -477,12 +477,18 @@ async function connectWebSocket() {
                     if (document.visibilityState === 'visible') {
                         playNotificationSound();
                     }
-                    // 既存の接続があれば一度閉じてから再接続を試みる
+                    // 既存の接続があれば一度閉じてから再接続を試みる。
+                    // close処理が完了するのを待つために、わずかな遅延を入れる。
                     if (peers[joinedUUID]) {
                         closePeerConnection(joinedUUID, true); // silent close
+                        // 接続のクリーンアップ時間を確保するためにsetTimeoutを使用
+                        setTimeout(() => {
+                            createOfferForPeer(joinedUUID);
+                        }, 100); // 100msの遅延
+                    } else {
+                        // 友達なので接続を開始する
+                        await createOfferForPeer(joinedUUID);
                     }
-                    // 友達なので接続を開始する
-                    await createOfferForPeer(joinedUUID);
                 } else {
                     updateStatus(`Peer ${joinedUUID.substring(0,6)} joined (NOT a friend).`, 'gray');
                 }
