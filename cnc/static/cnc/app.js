@@ -2044,10 +2044,14 @@ async function handleSubscribeClick() {
         if (session.id) {
             await stripe.redirectToCheckout({ sessionId: session.id });
         } else {
-            updateStatus(`Could not create checkout session: ${session.error || 'Unknown error'}`, 'red');
+            // サーバーからのエラーメッセージを具体的に表示
+            const errorMessage = session.error || 'An unknown error occurred while creating the checkout session.';
+            updateStatus(`Could not create checkout session: ${errorMessage}`, 'red');
+            console.error('Checkout session creation failed:', session);
         }
-    } catch (error) { // 修正
-        updateStatus(`Error during subscription: ${error}`, 'red');
+    } catch (error) {
+        updateStatus(`Error during subscription process: ${error}`, 'red');
+        console.error('Error in handleSubscribeClick:', error);
     }
 }
 

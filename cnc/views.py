@@ -96,6 +96,12 @@ class CreateCheckoutSessionView(View):
             except Exception as e:
                  # Stripe APIでエラーが発生した場合など
                  return JsonResponse({'error': str(e)}, status=500)
+            except stripe.error.StripeError as e:
+                 # Stripe APIでエラーが発生した場合
+                 return JsonResponse({'error': f"Stripe API error: {e}"}, status=500)
+            except Exception as e: # get_or_createでのDBエラーなどをキャッチ
+                 # データベースエラーなど、その他の予期せぬエラー
+                 return JsonResponse({'error': f"Server error: {e}"}, status=500)
 
             # 通貨に応じて価格IDを選択
             if currency == 'usd':
@@ -120,6 +126,7 @@ class CreateCheckoutSessionView(View):
             return JsonResponse({'id': checkout_session.id})
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=400)
+            return JsonResponse({'error': str(e)}, status=500)
 
 
 @method_decorator(csrf_exempt, name='dispatch')

@@ -41,3 +41,7 @@ CVC	任意の3桁の数字 (例: 123)
 DEBUG = env.bool('DJANGO_DEBUG', default=False)
 DEBUG = env.bool('DJANGO_DEBUG', default=True)
 
+### Start Command
+ python manage.py migrate && daphne -b 0.0.0.0 -p 10000 cybernetcall.asgi:application
+
+

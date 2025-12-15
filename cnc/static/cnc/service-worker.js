@@ -100,30 +100,45 @@ self.addEventListener('fetch', event => {
 self.addEventListener('push', event => {
   console.log('[Service Worker] Push Received.');
 
-  // PushされたデータをJSONとして解析
-  // デフォルトのタイトルと本文を用意
-  let data = { title: 'New Message', body: 'You have a new message.' };
+  let data = { title: 'CyberNetCall', body: 'You have a new message.' };
   if (event.data) {
     try {
       data = event.data.json();
     } catch (e) {
       console.error('[Service Worker] Push event data is not valid JSON.', e);
+      // フォールバックとしてテキストを試す
+      data = { title: 'CyberNetCall', body: event.data.text() };
     }
   }
 
   const title = data.title || 'CyberNetCall';
-  const options = {
+  let options = {
     body: data.body,
-    icon: '/static/cnc/icons/icon-192x192.png', // 通知に表示されるアイコン
-    badge: '/static/cnc/icons/icon-192x192.png', // Androidでステータスバーに表示される小さなアイコン
-    sound: '/static/cnc/notification.mp3', // iOSやAndroidで通知音を鳴らす
-    vibrate: [200, 100, 200] // Androidでバイブレーションを鳴らす (振動200ms, 停止100ms, 振動200ms)
+    icon: '/static/cnc/icons/icon-192x192.png',
+    badge: '/static/cnc/icons/icon-192x192.png',
+    sound: '/static/cnc/notification.mp3',
+    vibrate: [200, 100, 200],
+    data: {
+        url: '/' // デフォルトのURL
+    }
   };
+
+  // 「紫の足跡」タイプの通知を処理
+  if (data.type === 'friend_online' && data.friendId) {
+    options.body = `Friend ${data.friendId.substring(0, 8)}... is now online!`;
+    options.actions = [
+      { action: 'chat', title: 'Chat' }
+    ];
+    options.data.url = `/?friendId=${data.friendId}&action=chat`;
+  }
 
   const promiseChain = self.registration.showNotification(title, options)
     .then(() => {
+      // バッジAPIをサポートしているか確認
       if ('setAppBadge' in self.navigator) {
-        return self.navigator.setAppBadge(1); // とりあえずバッジを1に設定
+        // ここでは単純に1を設定していますが、本来はサーバーから未読件数を取得するなど、
+        // より動的なカウント管理が望ましいです。
+        return self.navigator.setAppBadge(1);
       }
     });
   event.waitUntil(promiseChain);
@@ -132,12 +147,30 @@ self.addEventListener('push', event => {
 // ユーザーが通知をクリックしたときに発火
 self.addEventListener('notificationclick', event => {
   console.log('[Service Worker] Notification click Received.');
-
-  // 通知を閉じる
   event.notification.close();
 
-  // アプリのウィンドウを開くか、既存のウィンドウにフォーカスする
+  // 通知データからURLを取得、なければデフォルトURL
+  const urlToOpen = event.notification.data && event.notification.data.url ? event.notification.data.url : '/';
+
   event.waitUntil(
-    clients.openWindow('/')
+    clients.matchAll({
+      type: "window",
+      includeUncontrolled: true
+    }).then((clientList) => {
+      // アプリのウィンドウが既に開いているか確認
+      for (const client of clientList) {
+        // 同じオリジンのウィンドウがあれば、そこにフォーカスしてナビゲートする
+        if (client.url.startsWith(self.location.origin)) {
+          if (client.navigate) {
+            // client.navigateはPromiseを返すので、それをチェーンする
+            return client.navigate(urlToOpen).then(c => c.focus());
+          }
+        }
+      }
+      // 開いているウィンドウがなければ、新しいウィンドウを開く
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
+      }
+    })
   );
 });
