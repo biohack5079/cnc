@@ -75,5 +75,9 @@ class StripeCustomer(models.Model):
     # 現在の請求期間の終了日時 (Unixタイムスタンプ)
     current_period_end = models.DateTimeField(blank=True, null=True)
 
+    # 👇 これを追加！ 
+    
+    created_at = models.DateTimeField(auto_now_add=True) 
+
     def __str__(self):
         return f"Stripe Customer for {self.user_uuid[:8]} ({self.subscription_status})"

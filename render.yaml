@@ -17,7 +17,8 @@ services:
     env: python
     region: singapore
     buildCommand: './build.sh'
-    startCommand: 'daphne -b 0.0.0.0 -p 10000 cnc-pwa.asgi:application'
+    startCommand: 'python manage.py migrate && daphne -b 0.0.0.0 -p 10000 cnc-pwa.asgi:application'
+
     plan: free
     branch: main
     healthCheckPath: /
