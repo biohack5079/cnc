@@ -56,6 +56,13 @@ const i18n = {
         missedCallFrom: "Missed call from",
         at: "at",
         freeTrial: "Free Trial",
+        mail: "Mail",
+        sendMail: "Send Mail",
+        cancel: "Cancel",
+        nextAccess: "Next Access",
+        mailSent: "Mail sent!",
+        mailReceived: "You got mail!",
+        content: "Content",
     },
     ja: {
         friends: "友達",
@@ -70,6 +77,13 @@ const i18n = {
         missedCallFrom: "不在着信 from",
         at: "at", // 必要に応じて変更
         freeTrial: "無料期間",
+        mail: "メール",
+        sendMail: "送信",
+        cancel: "キャンセル",
+        nextAccess: "次回アクセス予定",
+        mailSent: "メールを送信しました！",
+        mailReceived: "メールが届きました！",
+        content: "本文",
     }
 };
 
@@ -83,7 +97,7 @@ let isAttemptingReconnect = false;
 const CHUNK_SIZE = 16384;
 let fileReader;
 const DB_NAME = 'cybernetcall-db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 let dbPromise = typeof idb !== 'undefined' ? idb.openDB(DB_NAME, DB_VERSION, {
   upgrade(db, oldVersion) {
     if (!db.objectStoreNames.contains('posts')) {
@@ -95,6 +109,10 @@ let dbPromise = typeof idb !== 'undefined' ? idb.openDB(DB_NAME, DB_VERSION, {
     if (oldVersion < 3 && !db.objectStoreNames.contains('fileChunks')) {
       const store = db.createObjectStore('fileChunks', { keyPath: ['fileId', 'chunkIndex'] });
       store.createIndex('by_fileId', 'fileId');
+    }
+    if (oldVersion < 4 && !db.objectStoreNames.contains('mails')) {
+      const store = db.createObjectStore('mails', { keyPath: 'id' });
+      store.createIndex('by_sender', 'sender');
     }
   }
 }) : null;
@@ -430,8 +448,21 @@ function displaySingleFriend(friend, isOnline, hadOfflineActivity, canShowFootpr
     });
     callFriendButton.disabled = !isOnline;
 
+    const mailButton = document.createElement('button');
+    mailButton.textContent = `✉`;
+    mailButton.className = 'mail-friend-button';
+    mailButton.title = i18n[lang].mail;
+    mailButton.style.marginLeft = '5px';
+    mailButton.onclick = () => openMailModal(friend.id);
+
+    if (!canShowFootprints) {
+        mailButton.disabled = true;
+        mailButton.style.opacity = '0.5';
+    }
+
     div.appendChild(nameSpan);
     div.appendChild(callFriendButton);
+    div.appendChild(mailButton);
     friendListElement.appendChild(div);
 }
 
@@ -627,6 +658,21 @@ async function connectWebSocket() {
              if (senderUUID) {
                 handleCallBusy(senderUUID);
             }
+            break;
+        case 'mail':
+             if (payload && payload.sender) {
+                 const mail = payload;
+                 if (dbPromise) {
+                     const db = await dbPromise;
+                     await db.put('mails', mail);
+                 }
+                 const lang = getLang();
+                 updateStatus(`${i18n[lang].mailReceived} from ${mail.sender.substring(0,6)}`, 'purple');
+                 displayMailMessage(mail);
+                 if (document.visibilityState === 'visible') {
+                    playNotificationSound();
+                 }
+             }
             break;
       }
     } catch (error) {
@@ -1392,6 +1438,25 @@ function displayDirectMessage(message, isOwnMessage = false, senderUUID = null) 
     messageAreaElement.appendChild(div);
     messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
 }
+function displayMailMessage(mail) {
+    if (!messageAreaElement) return;
+    const div = document.createElement('div');
+    div.className = 'message peer-message';
+    div.style.border = '2px solid purple';
+    div.style.backgroundColor = '#f9f0ff';
+
+    const senderName = `✉ Mail from ${mail.sender.substring(0, 6)}`;
+    const linkedContent = linkify(mail.content);
+    let html = `<strong>${senderName}:</strong><br>${linkedContent}`;
+
+    if (mail.nextAccess) {
+        const dateStr = new Date(mail.nextAccess).toLocaleString();
+        html += `<br><small style="color:purple">📅 ${i18n[getLang()].nextAccess}: ${dateStr}</small>`;
+    }
+    div.innerHTML = DOMPurify.sanitize(html);
+    messageAreaElement.appendChild(div);
+    messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
+}
 async function handleSendPost() {
   const input = postInputElement;
   const content = input?.value?.trim();
@@ -2104,6 +2169,135 @@ async function handleSubscribeClick() {
     }
 }
 
+let mailModal;
+let currentMailTarget = null;
+
+function createMailModal() {
+    if (document.getElementById('mailModal')) return;
+
+    const modal = document.createElement('div');
+    modal.id = 'mailModal';
+    modal.style.display = 'none';
+    modal.style.position = 'fixed';
+    modal.style.zIndex = '1000';
+    modal.style.left = '0';
+    modal.style.top = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.overflow = 'auto';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.4)';
+
+    const content = document.createElement('div');
+    content.style.backgroundColor = '#fefefe';
+    content.style.margin = '15% auto';
+    content.style.padding = '20px';
+    content.style.border = '1px solid #888';
+    content.style.width = '80%';
+    content.style.maxWidth = '500px';
+    content.style.borderRadius = '8px';
+
+    const title = document.createElement('h3');
+    title.id = 'mailModalTitle';
+
+    const textArea = document.createElement('textarea');
+    textArea.id = 'mailContent';
+    textArea.style.width = '100%';
+    textArea.style.height = '100px';
+    textArea.style.marginBottom = '10px';
+
+    const dateLabel = document.createElement('label');
+    dateLabel.id = 'mailDateLabel';
+    dateLabel.style.display = 'block';
+    dateLabel.style.marginBottom = '5px';
+
+    const dateInput = document.createElement('input');
+    dateInput.type = 'datetime-local';
+    dateInput.id = 'mailNextAccess';
+    dateInput.style.width = '100%';
+    dateInput.style.marginBottom = '20px';
+
+    const btnContainer = document.createElement('div');
+    btnContainer.style.textAlign = 'right';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.id = 'mailCancelBtn';
+    cancelBtn.style.marginRight = '10px';
+    cancelBtn.onclick = closeMailModal;
+
+    const sendBtn = document.createElement('button');
+    sendBtn.id = 'mailSendBtn';
+    sendBtn.onclick = sendMail;
+
+    btnContainer.appendChild(cancelBtn);
+    btnContainer.appendChild(sendBtn);
+
+    content.appendChild(title);
+    content.appendChild(textArea);
+    content.appendChild(dateLabel);
+    content.appendChild(dateInput);
+    content.appendChild(btnContainer);
+
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    mailModal = modal;
+}
+
+function openMailModal(friendId) {
+    if (!mailModal) createMailModal();
+    currentMailTarget = friendId;
+    const lang = getLang();
+
+    document.getElementById('mailModalTitle').textContent = `${i18n[lang].mail} to ${friendId.substring(0,6)}`;
+    document.getElementById('mailContent').placeholder = i18n[lang].content;
+    document.getElementById('mailDateLabel').textContent = i18n[lang].nextAccess;
+    document.getElementById('mailCancelBtn').textContent = i18n[lang].cancel;
+    document.getElementById('mailSendBtn').textContent = i18n[lang].sendMail;
+    document.getElementById('mailContent').value = '';
+    document.getElementById('mailNextAccess').value = '';
+
+    mailModal.style.display = 'block';
+}
+
+function closeMailModal() {
+    if (mailModal) mailModal.style.display = 'none';
+    currentMailTarget = null;
+}
+
+async function sendMail() {
+    if (!currentMailTarget) return;
+    const content = document.getElementById('mailContent').value;
+    const nextAccess = document.getElementById('mailNextAccess').value;
+
+    if (!content) {
+        alert("Please enter content.");
+        return;
+    }
+
+    const mailData = {
+        id: generateUUID(),
+        sender: myDeviceId,
+        target: currentMailTarget,
+        content: content,
+        nextAccess: nextAccess,
+        timestamp: new Date().toISOString()
+    };
+
+    if (dbPromise) {
+        try {
+            const db = await dbPromise;
+            await db.put('mails', mailData);
+        } catch (e) { console.error("DB Error saving mail:", e); }
+    }
+
+    sendSignalingMessage({
+        type: 'mail',
+        payload: mailData
+    });
+
+    updateStatus(i18n[getLang()].mailSent, 'green');
+    closeMailModal();
+}
+
 async function main() {
   updateStatus('Initializing...', 'black');
 
@@ -2219,6 +2413,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 2. UIイベントリスナーのセットアップ
     setupEventListeners();
+    createMailModal();
     // Service Workerの登録
 
     onlineFriendSelector?.addEventListener('change', (event) => {
