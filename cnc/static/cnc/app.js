@@ -362,6 +362,17 @@ async function displayInitialPosts() {
   } catch (error) {
   }
 }
+async function displayStoredMails() {
+  if (!dbPromise || !messageAreaElement) return;
+  try {
+    const db = await dbPromise;
+    const mails = await db.getAll('mails');
+    mails.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+    mails.forEach(mail => displayMailMessage(mail));
+  } catch (error) {
+    console.error("Error displaying stored mails:", error);
+  }
+}
 function displayPost(post, isNew = true) {
   if (!postAreaElement) return;
   const div = document.createElement('div');
@@ -528,7 +539,9 @@ async function connectWebSocket() {
             // isSubscribed はページ読み込み時にAPIから取得するため、ここでは何もしない
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
+            console.log("[DEBUG] Registered payload:", payload);
             if (payload.notifications && Array.isArray(payload.notifications)) {
+                console.log("[DEBUG] Notifications:", payload.notifications);
                 for (const notification of payload.notifications) {
                     if (notification.type === 'missed_call') {
                         displayMissedCallNotification(notification.sender, notification.timestamp);
@@ -557,6 +570,56 @@ async function connectWebSocket() {
                             }
                             updateStatus(statusMessage, 'purple');
                         }
+                    } else if (notification.type === 'mail') {
+                        const mail = notification.payload || notification;
+                        // サーバーからの通知形式によってsenderやidの場所が異なる場合に対応
+                        if (!mail.sender && notification.sender) {
+                            mail.sender = notification.sender;
+                        }
+                        if (!mail.sender) continue;
+                        if (!mail.id) {
+                            mail.id = notification.id || generateUUID();
+                        }
+                        if (!mail.timestamp && notification.timestamp) {
+                            mail.timestamp = notification.timestamp;
+                        }
+
+                        let db = null;
+                        if (dbPromise) {
+                            try { db = await dbPromise; } catch (e) {}
+                        }
+                        let isInFreeTrial = true;
+                        if (db) {
+                            const friend = await db.get('friends', mail.sender);
+                            if (friend) {
+                                const addedDate = friend.added ? new Date(friend.added) : new Date();
+                                const now = new Date();
+                                const thirtyDaysInMillis = 30 * 24 * 60 * 60 * 1000;
+                                isInFreeTrial = (now - addedDate) < thirtyDaysInMillis;
+                            }
+                        }
+
+                        const canProcessNotification = isSubscribed || isInFreeTrial;
+
+                        if (canProcessNotification) {
+                            if (db) {
+                                try {
+                                    await db.put('mails', mail);
+                                } catch (e) {
+                                    console.error("Failed to save mail to DB:", e);
+                                }
+                            }
+                            displayMailMessage(mail);
+                            const lang = getLang();
+                            let statusMessage = `${i18n[lang].mailReceived} from ${mail.sender.substring(0,6)}`;
+                            if (!isSubscribed && isInFreeTrial) {
+                                statusMessage += ` (${i18n[lang].freeTrial})`;
+                            }
+                            updateStatus(statusMessage, 'purple');
+                            if (document.visibilityState === 'visible') {
+                                playNotificationSound();
+                            }
+                        }
                     }
                 }
             }
@@ -565,6 +628,38 @@ async function connectWebSocket() {
             currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
             await displayFriendList();
+            await displayStoredMails(); // 再接続時に保存されたメールを再表示する
+
+            // --- 未送信メールの再送処理 ---
+            // サーバーへの登録(register)が完了したこのタイミングで再送することで、
+            // サーバーが送信者を認識し、正しく処理できるようにする
+            if (dbPromise) {
+                try {
+                    const db = await dbPromise;
+                    const tx = db.transaction('mails', 'readwrite');
+                    const allMails = await tx.store.getAll();
+                    const pendingMails = allMails.filter(m => m.sender === myDeviceId && m.synced === false);
+                    
+                    if (pendingMails.length > 0) {
+                        updateStatus(`Resending ${pendingMails.length} pending mails...`, 'blue');
+                        for (const mail of pendingMails) {
+                            sendSignalingMessage({
+                                type: 'mail',
+                                uuid: myDeviceId, // 送信者IDをトップレベルにも追加
+                                target: mail.target,
+                                payload: mail
+                            });
+                            mail.synced = true;
+                            await tx.store.put(mail);
+                        }
+                        updateStatus(`Resent ${pendingMails.length} pending mails.`, 'green');
+                    }
+                    await tx.done;
+                } catch (e) {
+                    console.error("Error resending pending mails:", e);
+                }
+            }
+
             // 友達との自動接続を開始する
             startAutoConnectFriendsTimer();
             if (pendingConnectionFriendId) {
@@ -660,7 +755,12 @@ async function connectWebSocket() {
             }
             break;
         case 'mail':
-             if (payload && payload.sender) {
+             console.log("[DEBUG] Realtime mail received:", payload);
+             if (payload && payload.sender && payload.sender !== myDeviceId) {
+                 // 受信したメールは synced: true (送信不要) として扱う
+                 if (payload.synced !== undefined) {
+                     payload.synced = true;
+                 }
                  const mail = payload;
                  if (dbPromise) {
                      const db = await dbPromise;
@@ -733,8 +833,6 @@ function handleWebSocketReconnect() {
 }
 function sendSignalingMessage(message) {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
-    if (!message.payload) message.payload = {};
-    if (!message.payload.uuid) message.payload.uuid = myDeviceId;
     signalingSocket.send(JSON.stringify(message));
   } else {
     updateStatus('Signaling connection not ready.', 'red');
@@ -1439,13 +1537,25 @@ function displayDirectMessage(message, isOwnMessage = false, senderUUID = null) 
     messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
 }
 function displayMailMessage(mail) {
-    if (!messageAreaElement) return;
+    if (!messageAreaElement || !mail || !mail.sender) return;
+    
+    // 重複表示を防ぐ
+    const existingElement = document.getElementById(`mail-${mail.id}`);
+    if (existingElement) return;
+
     const div = document.createElement('div');
-    div.className = 'message peer-message';
+    div.id = `mail-${mail.id}`; // IDを付与して重複チェック可能にする
+    
+    const isOwn = mail.sender === myDeviceId;
+    div.className = isOwn ? 'message own-message' : 'message peer-message';
     div.style.border = '2px solid purple';
     div.style.backgroundColor = '#f9f0ff';
 
-    const senderName = `✉ Mail from ${mail.sender.substring(0, 6)}`;
+    let senderName = `✉ Mail from ${mail.sender.substring(0, 6)}`;
+    if (isOwn) {
+        senderName = `✉ Mail to ${mail.target ? mail.target.substring(0, 6) : 'Peer'}`;
+    }
+
     const linkedContent = linkify(mail.content);
     let html = `<strong>${senderName}:</strong><br>${linkedContent}`;
 
@@ -2275,12 +2385,29 @@ async function sendMail() {
 
     const mailData = {
         id: generateUUID(),
+        type: 'mail',
+        uuid: myDeviceId,
         sender: myDeviceId,
         target: currentMailTarget,
         content: content,
         nextAccess: nextAccess,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        synced: false // 未送信フラグ
     };
+
+    let isSent = false;
+    if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+        sendSignalingMessage({
+            type: 'mail',
+            uuid: myDeviceId, // 送信者IDをトップレベルにも追加
+            target: currentMailTarget,
+            payload: mailData
+        });
+        mailData.synced = true;
+        isSent = true;
+    } else {
+        updateStatus("Offline. Mail saved and will be sent when online.", "orange");
+    }
 
     if (dbPromise) {
         try {
@@ -2289,12 +2416,11 @@ async function sendMail() {
         } catch (e) { console.error("DB Error saving mail:", e); }
     }
 
-    sendSignalingMessage({
-        type: 'mail',
-        payload: mailData
-    });
+    displayMailMessage(mailData);
 
-    updateStatus(i18n[getLang()].mailSent, 'green');
+    if (isSent) {
+        updateStatus(i18n[getLang()].mailSent, 'green');
+    }
     closeMailModal();
 }
 
@@ -2351,6 +2477,7 @@ async function main() {
       updateStatus("Database features disabled. Offline functionality will be limited.", "orange");
   } else {
       await displayInitialPosts();
+      await displayStoredMails();
       await displayFriendList();
   }
 
@@ -2372,6 +2499,18 @@ async function main() {
       }
   }
 }
+
+// デバッグ用: コンソールから window.debugDumpMails() を実行してDBの中身を確認
+window.debugDumpMails = async () => {
+    if (!dbPromise) {
+        console.log("Database not ready.");
+        return;
+    }
+    const db = await dbPromise;
+    const mails = await db.getAll('mails');
+    console.table(mails);
+    console.log("Total mails in DB:", mails.length);
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     // 1. DOM要素の取得
