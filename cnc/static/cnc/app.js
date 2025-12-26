@@ -12,7 +12,8 @@ const AppState = {
 let currentAppState = AppState.INITIAL;
 let qrElement, statusElement, qrReaderElement, qrResultsElement, localVideoElement, remoteVideoElement, messageAreaElement, postAreaElement;
 let messageInputElement, sendMessageButton, postInputElement, sendPostButton;
-let fileInputElement, sendFileButton, fileTransferStatusElement;
+let directFileInputElement, sendDirectFileButton, directFileTransferStatusElement;
+let groupFileInputElement, sendGroupFileButton, groupFileTransferStatusElement;
 let onlineFriendSelector;
 let callButton, frontCamButton, backCamButton, startScanButton;let remoteVideosContainer;
 let incomingCallModal, callerIdElement, acceptCallButton, rejectCallButton;
@@ -220,9 +221,11 @@ function setInteractionUiEnabled(enabled) {
     if (sendMessageButton) sendMessageButton.disabled = disabled;
     if (postInputElement) postInputElement.disabled = disabled;
     if (sendPostButton) sendPostButton.disabled = disabled;
-    if (fileInputElement) fileInputElement.disabled = disabled;
+    if (directFileInputElement) directFileInputElement.disabled = disabled;
+    if (groupFileInputElement) groupFileInputElement.disabled = disabled;
     if (onlineFriendSelector) onlineFriendSelector.disabled = disabled;
-    if (sendFileButton) sendFileButton.disabled = disabled;
+    if (sendDirectFileButton) sendDirectFileButton.disabled = disabled;
+    if (sendGroupFileButton) sendGroupFileButton.disabled = disabled;
     if (callButton) callButton.disabled = disabled;
     // ビデオ会議がアクティブな場合のみ、カメラボタンの状態を更新
     if (localStream) {
@@ -1302,11 +1305,13 @@ async function processTextMessage(dataString, senderUUID) {
                 incomingFileInfo[message.fileId] = {
                     name: message.name,
                     size: message.size,
-                    type: message.fileType
+                    type: message.fileType,
+                    isBroadcast: message.isBroadcast
                 };
                 receivedSize[message.fileId] = 0;
-                if (fileTransferStatusElement) {
-                    fileTransferStatusElement.textContent = `Receiving ${message.name}... 0%`;
+                const statusElement = message.isBroadcast ? groupFileTransferStatusElement : directFileTransferStatusElement;
+                if (statusElement) {
+                    statusElement.textContent = `Receiving ${message.name}... 0%`;
                 }
                 break;
             case 'file-chunk':
@@ -1323,10 +1328,15 @@ async function processTextMessage(dataString, senderUUID) {
 }
 async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) {
     const { fileId, index: chunkIndex, last: isLast, senderUUID } = chunkMeta;
-    if (!incomingFileInfo[fileId]) {
+    const fileInfo = incomingFileInfo[fileId];
+    if (!fileInfo) {
       console.error(`Received chunk data for unknown file transfer (no metadata): ${fileId} from ${senderUUID}`);
         return;
     }
+
+    const statusElement = fileInfo.isBroadcast ? groupFileTransferStatusElement : directFileTransferStatusElement;
+    const targetArea = fileInfo.isBroadcast ? postAreaElement : messageAreaElement;
+
     let db;
     try {
         if (!(chunkDataAsArrayBuffer instanceof ArrayBuffer)) {
@@ -1334,7 +1344,7 @@ async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) {
             return;
         }
         if (!dbPromise) {
-            if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`DB Error for ${incomingFileInfo[fileId]?.name || 'file'}`);
+            if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`DB Error for ${fileInfo.name || 'file'}`);
             delete incomingFileInfo[fileId];
             if (receivedSize) delete receivedSize[fileId];
             return;
@@ -1349,41 +1359,46 @@ async function processFileChunk(chunkMeta, chunkDataAsArrayBuffer) {
         let actualReceivedSize = 0;
         allChunksForFileFromDb.forEach(c => actualReceivedSize += c.data.byteLength);
         receivedSize[fileId] = actualReceivedSize;
-        const progress = Math.round((receivedSize[fileId] / incomingFileInfo[fileId].size) * 100);
-        if (fileTransferStatusElement) {
-          fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Receiving ${incomingFileInfo[fileId].name}... ${progress}%`);
+        const progress = Math.round((receivedSize[fileId] / fileInfo.size) * 100);
+        if (statusElement) {
+          statusElement.innerHTML = DOMPurify.sanitize(`Receiving ${fileInfo.name}... ${progress}%`);
         }
         if (isLast) {
-            if (receivedSize[fileId] !== incomingFileInfo[fileId].size) {
-                if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error assembling ${incomingFileInfo[fileId].name} (final size error)`);
+            if (receivedSize[fileId] !== fileInfo.size) {
+                if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`Error assembling ${fileInfo.name} (final size error)`);
                 await cleanupFileTransferData(fileId, db);
                 return;
             }
             allChunksForFileFromDb.sort((a, b) => a.chunkIndex - b.chunkIndex);
             if (allChunksForFileFromDb.length !== chunkIndex + 1) {
                  console.warn(`Missing chunks for file ${fileId}. Expected ${chunkIndex + 1}, got ${allChunksForFileFromDb.length} from DB. Cannot assemble.`);
-                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error receiving ${incomingFileInfo[fileId].name} (missing chunks from DB)`);
+                 if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`Error receiving ${fileInfo.name} (missing chunks from DB)`);
                  await cleanupFileTransferData(fileId, db);
                  return;
             }
             const orderedChunkData = allChunksForFileFromDb.map(c => c.data);
-            const fileBlob = new Blob(orderedChunkData, { type: incomingFileInfo[fileId].type });
+            const fileBlob = new Blob(orderedChunkData, { type: fileInfo.type });
+
+            const downloadContainer = document.createElement('div');
+            downloadContainer.className = 'message peer-message';
+
+            const senderName = `File from ${senderUUID.substring(0, 6)}`;
             const downloadLink = document.createElement('a');
             downloadLink.href = URL.createObjectURL(fileBlob);
-            downloadLink.download = incomingFileInfo[fileId].name;
-            downloadLink.textContent = `Download ${incomingFileInfo[fileId].name}`;
-            downloadLink.style.display = 'block';
-            downloadLink.style.marginTop = '5px';
-            if (fileTransferStatusElement) {
-              fileTransferStatusElement.innerHTML = '';
-                fileTransferStatusElement.appendChild(downloadLink);
-            } else {
-                messageAreaElement.appendChild(downloadLink);
-            }
+            downloadLink.download = fileInfo.name;
+            downloadLink.textContent = `Download ${fileInfo.name}`;
+
+            downloadContainer.innerHTML = DOMPurify.sanitize(`<strong>${senderName}:</strong> `);
+            downloadContainer.appendChild(downloadLink);
+
+            if (statusElement) statusElement.innerHTML = '';
+            targetArea.appendChild(downloadContainer);
+            targetArea.scrollTop = targetArea.scrollHeight;
+
             await cleanupFileTransferData(fileId, db, true);
         }
     } catch (error) {
-    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Error processing chunk for ${incomingFileInfo[fileId]?.name || 'unknown file'}`);
+    if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`Error processing chunk for ${fileInfo?.name || 'unknown file'}`);
     await cleanupFileTransferData(fileId, db);
   }
 }
@@ -1417,6 +1432,19 @@ function sendPrivateMessage(targetPeerUUID, messageString) {
             return true;
         } catch (error) {
             console.error(`Error sending private message to ${targetPeerUUID}:`, error);
+            return false;
+        }
+    }
+    return false;
+}
+function sendPrivateBinaryData(targetPeerUUID, dataBuffer) {
+    const channel = dataChannels[targetPeerUUID];
+    if (channel && channel.readyState === 'open') {
+        try {
+            channel.send(dataBuffer);
+            return true;
+        } catch (error) {
+            console.error(`Error sending binary data to ${targetPeerUUID}:`, error);
             return false;
         }
     }
@@ -1604,64 +1632,103 @@ async function handleSendPost() {
     if(input) input.value = '';
   }
 }
-function handleSendFile() {
-    if (!fileInputElement || !fileInputElement.files || fileInputElement.files.length === 0) {
+function handleDirectSendFile() {
+    performFileTransfer(false);
+}
+
+function handleGroupSendFile() {
+    performFileTransfer(true);
+}
+
+function performFileTransfer(isBroadcast) {
+    const fileInput = isBroadcast ? groupFileInputElement : directFileInputElement;
+    const statusElement = isBroadcast ? groupFileTransferStatusElement : directFileTransferStatusElement;
+    const sendButton = isBroadcast ? sendGroupFileButton : sendDirectFileButton;
+    const targetPeerId = isBroadcast ? null : selectedPeerId;
+
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
         alert("Please select a file.");
         return;
     }
-    const openChannels = Object.entries(dataChannels).filter(([uuid, dc]) => dc && dc.readyState === 'open');
-    if (openChannels.length === 0) {
-        console.warn("Send file clicked but no open data channels.");
-        alert("Not connected to any peers to send the file.");
+    if (!isBroadcast && !targetPeerId) {
+        alert("Please select a friend to send the file to.");
         return;
     }
-    const file = fileInputElement.files[0];
+
+    const file = fileInput.files[0];
     const snapshottedFileSize = file.size;
     const fileId = generateUUID();
-    if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sending ${file.name}... 0%`);
-    sendFileButton.disabled = true;
+    if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`Sending ${file.name}... 0%`);
+    sendButton.disabled = true;
     const metadata = {
         type: 'file-metadata',
         fileId: fileId,
         name: file.name,
         size: snapshottedFileSize,
-        fileType: file.type
+        fileType: file.type,
+        isBroadcast: isBroadcast
     };
     const metadataString = JSON.stringify(metadata);
-    if (!broadcastMessage(metadataString)) {
-        alert("Failed to send file metadata to any peer.");
-        sendFileButton.disabled = false;
+
+    let metaSent = false;
+    if (isBroadcast) {
+        metaSent = broadcastMessage(metadataString);
+    } else {
+        metaSent = sendPrivateMessage(targetPeerId, metadataString);
+    }
+
+    if (!metaSent) {
+        const msg = isBroadcast ? "Failed to send file metadata to any peer." : `Failed to send file metadata to ${targetPeerId.substring(0,6)}.`;
+        alert(msg);
+        sendButton.disabled = false;
         return;
     }
-    fileReader = new FileReader();
+
+    // Use local FileReader to avoid conflicts if multiple transfers happen
+    const reader = new FileReader();
     let offset = 0;
     let chunkIndex = 0;
-    fileReader.addEventListener('error', error => {
+
+    reader.addEventListener('error', error => {
         console.error('FileReader error:', error);
         alert('File read error occurred.');
-        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('File read error');
-        sendFileButton.disabled = false;
+        if (statusElement) statusElement.innerHTML = DOMPurify.sanitize('File read error');
+        sendButton.disabled = false;
     });
-    fileReader.addEventListener('abort', event => {
+    reader.addEventListener('abort', event => {
         console.log('FileReader abort:', event);
-        if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('File send aborted');
-        sendFileButton.disabled = false;
+        if (statusElement) statusElement.innerHTML = DOMPurify.sanitize('File send aborted');
+        sendButton.disabled = false;
     });
-    fileReader.addEventListener('load', e => {
+    reader.addEventListener('load', e => {
         const chunkArrayBuffer = e.target.result;
-        if (openChannels.length > 0) {
-            const firstChannel = openChannels[0][1];
-            const bufferedAmount = firstChannel.bufferedAmount || 0;
-            if (bufferedAmount > CHUNK_SIZE * 16) {
-                setTimeout(() => {
-                    sendFileChunk(chunkArrayBuffer, file.name, snapshottedFileSize, fileId, chunkIndex, offset);
-                }, 200);
-                return;
-            }
+        
+        // Flow control check
+        let canSend = false;
+        if (isBroadcast) {
+            // For broadcast, we check if at least one channel is open. 
+            // Flow control for broadcast is tricky; we'll skip complex bufferedAmount checks for simplicity or check all.
+            // Here we just check if we have open channels.
+            const openChannels = Object.values(dataChannels).filter(dc => dc && dc.readyState === 'open');
+            canSend = openChannels.length > 0;
         } else {
-            console.warn("No open channels to send file chunk.");
-            if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('Connection lost during send');
-            sendFileButton.disabled = false;
+            const channel = dataChannels[targetPeerId];
+            if (channel && channel.readyState === 'open') {
+                // Simple flow control
+                if ((channel.bufferedAmount || 0) > CHUNK_SIZE * 16) {
+                    setTimeout(() => {
+                        sendFileChunk(chunkArrayBuffer, file.name, snapshottedFileSize, fileId, chunkIndex, offset);
+                    }, 200);
+                    return;
+                }
+                canSend = true;
+            }
+        }
+
+        if (!canSend) {
+            console.warn("Channel closed or unavailable during file send.");
+            if (statusElement) statusElement.innerHTML = DOMPurify.sanitize('Connection lost during send');
+            sendButton.disabled = false;
             return;
         }
         sendFileChunk(chunkArrayBuffer, file.name, snapshottedFileSize, fileId, chunkIndex, offset);
@@ -1670,12 +1737,12 @@ function handleSendFile() {
         try {
             const end = Math.min(o + CHUNK_SIZE, snapshottedFileSize);
             const slice = file.slice(o, end);
-            fileReader.readAsArrayBuffer(slice);
+            reader.readAsArrayBuffer(slice);
         } catch (readError) {
              console.error('Error reading file slice:', readError);
              alert('Failed to read file slice.');
-             if (fileTransferStatusElement) fileTransferStatusElement.textContent = 'File slice error';
-             sendFileButton.disabled = false;
+             if (statusElement) statusElement.textContent = 'File slice error';
+             sendButton.disabled = false;
         }
     };
     const sendFileChunk = async (chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount = 0) => {
@@ -1687,30 +1754,39 @@ function handleSendFile() {
                  last: ((currentOffset + chunkDataAsArrayBuffer.byteLength) >= originalFileSizeInLogic)
              };
              const metaString = JSON.stringify(chunkMetaMessage);
-             if (!broadcastMessage(metaString)) {
-                 if (retryCount < 3) throw new Error(`Failed to send chunk meta ${currentChunkIndex} to any peer.`);
+             
+             let metaSent = false;
+             if (isBroadcast) metaSent = broadcastMessage(metaString);
+             else metaSent = sendPrivateMessage(targetPeerId, metaString);
+
+             if (!metaSent) {
+                 if (retryCount < 3) throw new Error(`Failed to send chunk meta ${currentChunkIndex}.`);
                  else {
                     console.error(`Failed to send chunk meta ${currentChunkIndex} after multiple retries.`);
                  }
              }
              setTimeout(() => {
-                if (!broadcastBinaryData(chunkDataAsArrayBuffer)) {
-                    if (retryCount < 3) throw new Error(`Failed to send chunk data ${currentChunkIndex} to any peer.`);
+                let dataSent = false;
+                if (isBroadcast) dataSent = broadcastBinaryData(chunkDataAsArrayBuffer);
+                else dataSent = sendPrivateBinaryData(targetPeerId, chunkDataAsArrayBuffer);
+
+                if (!dataSent) {
+                    if (retryCount < 3) throw new Error(`Failed to send chunk data ${currentChunkIndex}.`);
                  else {
                     console.error(`Failed to send chunk data ${currentChunkIndex} after multiple retries.`);
                  }
              }
              const newOffset = currentOffset + chunkDataAsArrayBuffer.byteLength;
              const progress = Math.round((newOffset / originalFileSizeInLogic) * 100);
-             if (fileTransferStatusElement) fileTransferStatusElement.textContent = `Sending ${originalFileName}... ${progress}%`;
+             if (statusElement) statusElement.textContent = `Sending ${originalFileName}... ${progress}%`;
              if (newOffset < originalFileSizeInLogic) {
                 offset = newOffset;
                  chunkIndex++;
                  setTimeout(() => readSlice(newOffset), 0);
              } else {
-                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize(`Sent ${originalFileName}`);
-                 if(fileInputElement) fileInputElement.value = '';
-                 sendFileButton.disabled = false;
+                 if (statusElement) statusElement.innerHTML = DOMPurify.sanitize(`Sent ${originalFileName}`);
+                 if(fileInput) fileInput.value = '';
+                 sendButton.disabled = false;
              }
             }, 10);
         } catch (error) {
@@ -1719,9 +1795,9 @@ function handleSendFile() {
                  setTimeout(() => sendFileChunk(chunkDataAsArrayBuffer, originalFileName, originalFileSizeInLogic, currentFileId, currentChunkIndex, currentOffset, retryCount + 1), 1000 * (retryCount + 1));
              } else {
                  alert(`Failed to send chunk ${currentChunkIndex} after multiple retries.`);
-                 if (fileTransferStatusElement) fileTransferStatusElement.innerHTML = DOMPurify.sanitize('Chunk send error');
+                 if (statusElement) statusElement.innerHTML = DOMPurify.sanitize('Chunk send error');
                  await cleanupFileTransferData(currentFileId, await dbPromise);
-                 sendFileButton.disabled = false;
+                 sendButton.disabled = false;
              }
          }
     }
@@ -2207,7 +2283,8 @@ function setupEventListeners() {
     });
     sendMessageButton?.addEventListener('click', handleSendMessage);
     sendPostButton?.addEventListener('click', handleSendPost);
-    sendFileButton?.addEventListener('click', handleSendFile);
+    sendDirectFileButton?.addEventListener('click', handleDirectSendFile);
+    sendGroupFileButton?.addEventListener('click', handleGroupSendFile);
     callButton?.addEventListener('click', toggleVideoCall);
     frontCamButton?.addEventListener('click', () => handleVideoButtonClick('user'));
     backCamButton?.addEventListener('click', () => handleVideoButtonClick('environment'));
@@ -2581,10 +2658,13 @@ document.addEventListener('DOMContentLoaded', () => {
     sendMessageButton = document.getElementById('sendMessage');
     postInputElement = document.getElementById('postInput');
     sendPostButton = document.getElementById('sendPost');
-    fileInputElement = document.getElementById('fileInput');
+    directFileInputElement = document.getElementById('directFileInput');
+    groupFileInputElement = document.getElementById('groupFileInput');
     onlineFriendSelector = document.getElementById('onlineFriendSelector');
-    sendFileButton = document.getElementById('sendFile');
-    fileTransferStatusElement = document.getElementById('file-transfer-status');
+    sendDirectFileButton = document.getElementById('sendDirectFile');
+    sendGroupFileButton = document.getElementById('sendGroupFile');
+    directFileTransferStatusElement = document.getElementById('direct-file-transfer-status');
+    groupFileTransferStatusElement = document.getElementById('group-file-transfer-status');
     callButton = document.getElementById('callButton');
     frontCamButton = document.getElementById('frontCamButton');
     backCamButton = document.getElementById('backCamButton');
