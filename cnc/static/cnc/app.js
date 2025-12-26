@@ -63,6 +63,8 @@ const i18n = {
         mailSent: "Mail sent!",
         mailReceived: "You got mail!",
         content: "Content",
+        newMailNotification: "New mail from",
+        clickToView: "Click to view",
     },
     ja: {
         friends: "友達",
@@ -73,7 +75,7 @@ const i18n = {
         offline: "オフライン",
         onlineSince: "接続",
         justNow: "たった今",
-        call: "通話",
+        call: "",
         missedCallFrom: "不在着信 from",
         at: "at", // 必要に応じて変更
         freeTrial: "無料期間",
@@ -84,6 +86,8 @@ const i18n = {
         mailSent: "メールを送信しました！",
         mailReceived: "メールが届きました！",
         content: "本文",
+        newMailNotification: "新着メール from",
+        clickToView: "クリックして表示",
     }
 };
 
@@ -570,7 +574,7 @@ async function connectWebSocket() {
                             }
                             updateStatus(statusMessage, 'purple');
                         }
-                    } else if (notification.type === 'mail') {
+                    } else if (notification.type === 'new_mail_notification') { // 変更: 'mail' から 'new_mail_notification' へ
                         const mail = notification.payload || notification;
                         // サーバーからの通知形式によってsenderやidの場所が異なる場合に対応
                         if (!mail.sender && notification.sender) {
@@ -606,16 +610,10 @@ async function connectWebSocket() {
                                 try {
                                     await db.put('mails', mail);
                                 } catch (e) {
-                                    console.error("Failed to save mail to DB:", e);
+                                    // ここではDBに保存しない。クリック時に保存する
                                 }
                             }
-                            displayMailMessage(mail);
-                            const lang = getLang();
-                            let statusMessage = `${i18n[lang].mailReceived} from ${mail.sender.substring(0,6)}`;
-                            if (!isSubscribed && isInFreeTrial) {
-                                statusMessage += ` (${i18n[lang].freeTrial})`;
-                            }
-                            updateStatus(statusMessage, 'purple');
+                            displayNewMailNotification(mail); // 変更: 直接表示せず、通知を表示
                             if (document.visibilityState === 'visible') {
                                 playNotificationSound();
                             }
@@ -627,39 +625,7 @@ async function connectWebSocket() {
             updateStatus('Connected to signaling server. Ready.', 'green');
             currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
-            await displayFriendList();
-            await displayStoredMails(); // 再接続時に保存されたメールを再表示する
-
-            // --- 未送信メールの再送処理 ---
-            // サーバーへの登録(register)が完了したこのタイミングで再送することで、
-            // サーバーが送信者を認識し、正しく処理できるようにする
-            if (dbPromise) {
-                try {
-                    const db = await dbPromise;
-                    const tx = db.transaction('mails', 'readwrite');
-                    const allMails = await tx.store.getAll();
-                    const pendingMails = allMails.filter(m => m.sender === myDeviceId && m.synced === false);
-                    
-                    if (pendingMails.length > 0) {
-                        updateStatus(`Resending ${pendingMails.length} pending mails...`, 'blue');
-                        for (const mail of pendingMails) {
-                            sendSignalingMessage({
-                                type: 'mail',
-                                uuid: myDeviceId, // 送信者IDをトップレベルにも追加
-                                target: mail.target,
-                                payload: mail
-                            });
-                            mail.synced = true;
-                            await tx.store.put(mail);
-                        }
-                        updateStatus(`Resent ${pendingMails.length} pending mails.`, 'green');
-                    }
-                    await tx.done;
-                } catch (e) {
-                    console.error("Error resending pending mails:", e);
-                }
-            }
-
+            await Promise.all([displayFriendList(), displayStoredMails()]);
             // 友達との自動接続を開始する
             startAutoConnectFriendsTimer();
             if (pendingConnectionFriendId) {
@@ -754,21 +720,10 @@ async function connectWebSocket() {
                 handleCallBusy(senderUUID);
             }
             break;
-        case 'mail':
-             console.log("[DEBUG] Realtime mail received:", payload);
+        case 'new_mail_notification': // 変更: 'mail' から 'new_mail_notification' へ
+             console.log("[DEBUG] Realtime new mail notification received:", payload);
              if (payload && payload.sender && payload.sender !== myDeviceId) {
-                 // 受信したメールは synced: true (送信不要) として扱う
-                 if (payload.synced !== undefined) {
-                     payload.synced = true;
-                 }
-                 const mail = payload;
-                 if (dbPromise) {
-                     const db = await dbPromise;
-                     await db.put('mails', mail);
-                 }
-                 const lang = getLang();
-                 updateStatus(`${i18n[lang].mailReceived} from ${mail.sender.substring(0,6)}`, 'purple');
-                 displayMailMessage(mail);
+                 displayNewMailNotification(payload);
                  if (document.visibilityState === 'visible') {
                     playNotificationSound();
                  }
@@ -1567,6 +1522,68 @@ function displayMailMessage(mail) {
     messageAreaElement.appendChild(div);
     messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
 }
+
+function displayNewMailNotification(notification) {
+    if (!messageAreaElement || !notification || !notification.mail_id) return;
+    const lang = getLang();
+
+    // 既に同じ通知やメール本体が表示されていないか確認
+    if (document.getElementById(`mail-notification-${notification.mail_id}`) || document.getElementById(`mail-${notification.mail_id}`)) {
+        return;
+    }
+
+    const div = document.createElement('div');
+    div.id = `mail-notification-${notification.mail_id}`;
+    div.className = 'message peer-message mail-notification';
+    div.style.border = '2px solid purple';
+    div.style.backgroundColor = '#f9f0ff';
+    div.style.cursor = 'pointer';
+
+    const senderName = notification.sender ? notification.sender.substring(0, 6) : 'Unknown';
+    div.innerHTML = DOMPurify.sanitize(`<strong>✉ ${i18n[lang].newMailNotification} ${senderName}</strong><br><em>${i18n[lang].clickToView}</em>`);
+
+    div.onclick = () => fetchAndDisplayMail(notification.mail_id);
+
+    messageAreaElement.appendChild(div);
+    messageAreaElement.scrollTop = messageAreaElement.scrollHeight;
+    updateStatus(`${i18n[lang].newMailNotification} ${senderName}`, 'purple');
+}
+
+async function fetchAndDisplayMail(mailId) {
+    if (!mailId) return;
+    const notificationElement = document.getElementById(`mail-notification-${mailId}`);
+    if (notificationElement) {
+        notificationElement.style.cursor = 'default';
+        notificationElement.onclick = null;
+        notificationElement.innerHTML = '<em>Loading mail...</em>';
+    }
+
+    try {
+        // このAPIはサーバー側で実装する必要があります
+        const response = await fetch(`/api/mails/get/${mailId}/`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch mail from server.');
+        }
+        const mail = await response.json();
+
+        if (dbPromise) {
+            const db = await dbPromise;
+            await db.put('mails', mail);
+        }
+
+        // 通知メッセージを実際のメール内容に置き換える（一度削除してから再描画）
+        if (notificationElement) notificationElement.remove();
+        displayMailMessage(mail);
+
+    } catch (error) {
+        console.error("Error fetching mail:", error);
+        if (notificationElement) {
+            notificationElement.innerHTML = `<em style="color:red;">Failed to load mail.</em>`;
+        }
+        updateStatus('Failed to load mail.', 'red');
+    }
+}
+
 async function handleSendPost() {
   const input = postInputElement;
   const content = input?.value?.trim();
@@ -2384,44 +2401,75 @@ async function sendMail() {
     }
 
     const mailData = {
-        id: generateUUID(),
-        type: 'mail',
+        id: generateUUID(), // ローカルでの表示と重複チェックのためのクライアント側ID
         uuid: myDeviceId,
         sender: myDeviceId,
         target: currentMailTarget,
         content: content,
         nextAccess: nextAccess,
         timestamp: new Date().toISOString(),
-        synced: false // 未送信フラグ
     };
 
-    let isSent = false;
-    if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
-        sendSignalingMessage({
-            type: 'mail',
-            uuid: myDeviceId, // 送信者IDをトップレベルにも追加
-            target: currentMailTarget,
-            payload: mailData
-        });
-        mailData.synced = true;
-        isSent = true;
-    } else {
-        updateStatus("Offline. Mail saved and will be sent when online.", "orange");
-    }
+    // サーバーにメールを送信するためのペイロード
+    const payloadForServer = {
+        sender: myDeviceId,
+        target: currentMailTarget,
+        content: content,
+        next_access: nextAccess, // Django側はsnake_caseを想定
+        client_id: mailData.id
+    };
 
-    if (dbPromise) {
-        try {
+    updateStatus("Sending mail...", "blue");
+
+    try {
+        const csrfToken = getCookie('csrftoken');
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        if (csrfToken) {
+            headers['X-CSRFToken'] = csrfToken;
+        }
+
+        // このAPIはサーバー側で実装する必要があります
+        const response = await fetch('/api/mails/send/', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(payloadForServer)
+        });
+
+        if (!response.ok) {
+            let errorMsg = 'Server returned an error.';
+            try {
+                const errorData = await response.json();
+                errorMsg = errorData.error || errorMsg;
+            } catch (e) {
+                errorMsg = `Server Error: ${response.status} ${response.statusText}`;
+            }
+            throw new Error(errorMsg);
+        }
+
+        // サーバーからのレスポンスでmailDataを更新する（サーバー側IDなど）
+        const responseData = await response.json();
+        Object.assign(mailData, responseData.mail); // サーバーからのデータで上書き
+
+        if (dbPromise) {
             const db = await dbPromise;
             await db.put('mails', mailData);
-        } catch (e) { console.error("DB Error saving mail:", e); }
-    }
-
-    displayMailMessage(mailData);
-
-    if (isSent) {
+        }
+        displayMailMessage(mailData);
         updateStatus(i18n[getLang()].mailSent, 'green');
+        closeMailModal();
+    } catch (error) {
+        console.error("Failed to send mail via API:", error);
+        updateStatus(`Failed to send mail: ${error.message}. Saved locally.`, 'red');
+        // オフライン時やAPIエラー時は、とりあえずローカルに保存して表示する
+        if (dbPromise) {
+            const db = await dbPromise;
+            await db.put('mails', mailData);
+        }
+        displayMailMessage(mailData);
+        closeMailModal();
     }
-    closeMailModal();
 }
 
 async function main() {
