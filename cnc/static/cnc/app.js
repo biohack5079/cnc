@@ -53,7 +53,7 @@ const i18n = {
         offline: "Offline",
         onlineSince: "Online since",
         justNow: "Just now",
-        call: "Call",
+        call: "",
         missedCallFrom: "Missed call from",
         at: "at",
         freeTrial: "Free Trial",
