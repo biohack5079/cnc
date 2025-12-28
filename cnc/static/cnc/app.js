@@ -1048,9 +1048,10 @@ async function createPeerConnection(peerUUID, callType = 'data') {
     };
     peer.ontrack = (event) => {
       // callTypeに応じてハンドラを完全に分離
-      if (callType === 'private') {
+      const currentCallType = peerCallTypes[peerUUID] || callType;
+      if (currentCallType === 'private') {
           handlePrivateRemoteTrack(peerUUID, event.track, event.streams[0]);
-      } else if (callType === 'meeting') {
+      } else if (currentCallType === 'meeting') {
           handleMeetingRemoteTrack(peerUUID, event.track, event.streams[0]);
       }
       // 'data' の場合はビデオトラックを処理しない（無視する）
@@ -1410,6 +1411,12 @@ function closePeerConnection(peerUUID, silent = false) {
     if (videoElement) {
         videoElement.remove();
     }
+    const privateVideo = document.getElementById(`private-video-${peerUUID}`);
+    if (privateVideo) privateVideo.remove();
+    const meetingVideo = document.getElementById(`meeting-video-${peerUUID}`);
+    if (meetingVideo) meetingVideo.remove();
+    const oldVideo = document.getElementById(`remoteVideo-${peerUUID}`);
+    if (oldVideo) oldVideo.remove();
     // UIをリセット（非表示にするなど）
     const interfaceDiv = document.getElementById(`video-interface-${peerUUID}`);
     if (interfaceDiv) {
@@ -2353,11 +2360,11 @@ function handlePrivateRemoteTrack(peerUUID, track, stream) {
         updateStatus(`Incoming private video from ${peerUUID.substring(0, 6)}`, 'blue');
     }
 
-    let videoElement = document.getElementById(`remoteVideo-${peerUUID}`);
+    let videoElement = document.getElementById(`private-video-${peerUUID}`);
     if (!videoElement) {
         console.log(`Creating private video element for ${peerUUID}`);
         videoElement = document.createElement('video');
-        videoElement.id = `remoteVideo-${peerUUID}`;
+        videoElement.id = `private-video-${peerUUID}`;
         videoElement.autoplay = true;
         videoElement.playsInline = true;
         videoElement.style.width = '100%';
@@ -2370,17 +2377,15 @@ function handlePrivateRemoteTrack(peerUUID, track, stream) {
 function handleMeetingRemoteTrack(peerUUID, track, stream) {
     const container = remoteVideosContainer;
     if (!container) {
-        console.warn("Remote videos container not found.");
         console.warn("Meeting video container not found.");
         return;
     }
 
-    let videoElement = document.getElementById(`remoteVideo-${peerUUID}`);
+    let videoElement = document.getElementById(`meeting-video-${peerUUID}`);
     if (!videoElement) {
-        console.log(`Creating video element for ${peerUUID}`);
         console.log(`Creating meeting video element for ${peerUUID}`);
         videoElement = document.createElement('video');
-        videoElement.id = `remoteVideo-${peerUUID}`;
+        videoElement.id = `meeting-video-${peerUUID}`;
         videoElement.autoplay = true;
         videoElement.playsInline = true;
         videoElement.style.width = '100%';
@@ -2399,9 +2404,10 @@ function attachStreamToVideo(videoElement, stream, track) {
             videoElement.srcObject.addTrack(track);
         }
     } else {
-        console.warn(`Could not set srcObject for ${peerUUID} - no stream provided?`);
         console.warn("Could not set srcObject - no stream provided?");
     }
+    // Androidなどで再生を開始するために明示的にplayを呼ぶ
+    videoElement.play().catch(e => console.error("Error playing video:", e));
 }
 function updateQrCodeWithValue(value) {
     if (!qrElement) {
