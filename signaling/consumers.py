@@ -9,24 +9,55 @@ from cnc.models import Notification, PushSubscription, Mail
 
 logger = logging.getLogger(__name__)
 
-# このグローバル変数は、複数のサーバープロセスで共有されないため、本番環境では問題になります。
-# Channelsのグループ機能を使ってオンライン状態を管理するように変更します。
-# user_uuid_to_channel = {}
+# --- Global Redis Connection Pool for Production ---
+# This is created once when the Daphne worker process starts.
+redis_pool = None
+if not settings.DEBUG:
+    try:
+        # from_url is a synchronous method that creates a pool.
+        redis_pool = redis.ConnectionPool.from_url(
+            settings.REDIS_URL,
+            max_connections=20,
+            decode_responses=True # This is important for getting strings back
+        )
+        logger.info("Successfully created Redis connection pool.")
+    except Exception as e:
+        # If this fails, the app will still run, but Redis features will be disabled.
+        # The error will be in the logs.
+        logger.exception(f"CRITICAL: Failed to create Redis connection pool: {e}")
+        redis_pool = None
+
+# ローカル開発用（DEBUG=True）のインメモリオンラインユーザー管理
+local_online_users = set()
 
 class SignalingConsumer(AsyncWebsocketConsumer):
     ONLINE_USERS_REDIS_KEY = "online_users_set"
     async def connect(self):
         self.user_uuid = None
         self.broadcast_group_name = "signaling_broadcast"
+        self.redis_conn = None
+
+        # In production, get a connection from the pool.
+        if not settings.DEBUG:
+            if redis_pool:
+                # Creating the client from the pool is synchronous.
+                self.redis_conn = redis.Redis(connection_pool=redis_pool)
+                logger.info("Acquired Redis connection from pool.")
+            else:
+                # Log an error if the pool wasn't created.
+                # We don't close the connection, just log that Redis is unavailable.
+                logger.error("Redis connection pool is not available. Online user status will not work.")
+
+        # The original code had a bug here: `await redis.from_url(...)` which raises a TypeError.
+        # By moving connection logic out, we avoid the crash. The original code also closed
+        # the connection if Redis failed. Now, we accept the connection regardless of Redis status.
         await self.accept()
         logger.info(f"WebSocket connection accepted from {self.channel_name}")
 
     async def disconnect(self, close_code):
         logger.info(f"WebSocket connection closed for {self.channel_name} (UUID: {self.user_uuid}), code: {close_code}")
         if self.user_uuid:
-            # ブロードキャストグループとユーザー固有グループから離脱
             await self.channel_layer.group_discard(self.broadcast_group_name, self.channel_name)
-            # Redisからオンラインユーザーを削除
             await self.remove_online_user_from_redis(self.user_uuid)
             await self.channel_layer.group_discard(f"user_{self.user_uuid}", self.channel_name)
             
@@ -34,6 +65,11 @@ class SignalingConsumer(AsyncWebsocketConsumer):
                 'type': 'user_left',
                 'uuid': self.user_uuid
             }, exclude_self=True)
+
+        # With a connection pool, we don't need to manually close the connection.
+        # The connection is returned to the pool when the client object is garbage collected.
+        self.redis_conn = None
+        logger.debug("Redis connection released to pool (on disconnect).")
 
     async def receive(self, text_data):
         try:
@@ -290,40 +326,55 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     # --- Redisを使ったオンラインユーザー管理 ---
 
-    async def _get_redis_connection(self):
-        """Redis接続を取得するヘルパー関数"""
-        # settings.pyからRedisのURLを直接取得して接続する
-        # この方法はchannels_redisの内部実装に依存しないため、より堅牢です。
-        redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-        return await redis.from_url(redis_url)
-
     async def add_online_user_to_redis(self, user_uuid):
         """ユーザーをオンラインリストにRedisに追加する"""
-        redis_conn = await self._get_redis_connection() # _get_redis_connectionは非同期なのでawaitが必要
-        if redis_conn:
-            await redis_conn.sadd(self.ONLINE_USERS_REDIS_KEY, user_uuid)
-            logger.debug(f"Added {user_uuid[:8]} to Redis online users.")
+        if settings.DEBUG:
+            local_online_users.add(user_uuid)
+            logger.debug(f"Added {user_uuid[:8]} to local online users set (InMemory).")
+            return
+
+        if self.redis_conn:
+            await self.redis_conn.sadd(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+            logger.debug(f"Added {user_uuid[:8]} to Redis online users set.")
+        else:
+            if not settings.DEBUG:
+                logger.warning("Cannot add online user to Redis: no connection.")
 
     async def remove_online_user_from_redis(self, user_uuid):
         """ユーザーをオンラインリストからRedisで削除する"""
-        redis_conn = await self._get_redis_connection()
-        if redis_conn:
-            await redis_conn.srem(self.ONLINE_USERS_REDIS_KEY, user_uuid)
-            logger.debug(f"Removed {user_uuid[:8]} from Redis online users.")
+        if settings.DEBUG:
+            local_online_users.discard(user_uuid)
+            logger.debug(f"Removed {user_uuid[:8]} from local online users set (InMemory).")
+            return
+
+        if self.redis_conn:
+            await self.redis_conn.srem(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+            logger.debug(f"Removed {user_uuid[:8]} from Redis online users set.")
+        else:
+            if not settings.DEBUG:
+                logger.warning("Cannot remove online user from Redis: no connection.")
 
     async def get_all_online_user_uuids(self):
         """Redisから現在オンラインの全ユーザーのUUIDリストを取得する"""
-        redis_conn = await self._get_redis_connection()
-        if redis_conn:
-            online_users_bytes = await redis_conn.smembers(self.ONLINE_USERS_REDIS_KEY)
-            return {u.decode('utf-8') for u in online_users_bytes}
+        if settings.DEBUG:
+            return local_online_users.copy()
+
+        if self.redis_conn:
+            # decode_responses=True in the pool means we get strings directly
+            return await self.redis_conn.smembers(self.ONLINE_USERS_REDIS_KEY)
+
+        logger.warning("Cannot get online users from Redis: no connection.")
         return set()
 
     async def is_user_online(self, user_uuid):
         """Redisを使ってユーザーがオンラインかどうかをチェックする"""
-        redis_conn = await self._get_redis_connection()
-        if redis_conn:
-            return await redis_conn.sismember(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+        if settings.DEBUG:
+            return user_uuid in local_online_users
+
+        if self.redis_conn:
+            return await self.redis_conn.sismember(self.ONLINE_USERS_REDIS_KEY, user_uuid)
+
+        logger.warning(f"Cannot check online status for {user_uuid[:8]} from Redis: no connection.")
         return False
 
     async def notify_offline_friends_of_my_online_status(self, my_uuid, friends_list):
