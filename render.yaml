@@ -1,40 +1,35 @@
-databases:
-  - name: cnc-pwa_db
-    region: singapore
-    plan: free
-    databaseName: cnc-pwa_db
-    user: django_user
-
 services:
   - type: redis
     name: cnc-pwa-redis
     region: singapore
     plan: free
     maxmemoryPolicy: allkeys-lfu
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: Allow all
 
   - type: web
     name: cnc-pwa
     env: python
     region: singapore
     buildCommand: './build.sh'
-    startCommand: 'python manage.py migrate && daphne -b 0.0.0.0 -p 10000 cnc-pwa.asgi:application'
+    startCommand: 'python manage.py migrate && daphne -b 0.0.0.0 -p $PORT cybernetcall.asgi:application'
 
     plan: free
     branch: main
     healthCheckPath: /
     envVars:
       - key: DJANGO_DEBUG
-        value: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: cnc-pwa_db
-          property: connectionString
+        value: "false"
+      # DATABASE_URL はRenderのダッシュボードでSecretとして設定してください。
+      # Supabaseプロジェクトの接続文字列（postgres://...）を使用します。
       - key: REDIS_URL
         fromService:
           type: redis
           name: cnc-pwa-redis
+          property: connectionString
       - key: SECRET_KEY
         generateValue: true
       - key: WEB_CONCURRENCY
-        value: 4
+        value: "4"
     autoDeploy: true
