@@ -9,7 +9,7 @@ services:
         description: Allow all
 
   - type: web
-    name: cybernetcall
+    name: cnc-pwa
     env: python
     region: singapore
     buildCommand: './build.sh'
