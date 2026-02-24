@@ -1,6 +1,6 @@
 services:
   - type: redis
-    name: cybernetcall-redis
+    name: cnc-pwa-redis
     region: singapore
     plan: free
     maxmemoryPolicy: allkeys-lfu
@@ -28,7 +28,7 @@ services:
       - key: REDIS_URL
         fromService:
           type: redis
-          name: cybernetcall-redis
+          name: cnc-pwa-redis
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
