@@ -32,7 +32,7 @@ SECRET_KEY = env('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DJANGO_DEBUG', default=False)
-
+-
 ALLOWED_HOSTS = ['cnc-pwa.onrender.com', 'localhost', '127.0.0.1']
 CSRF_TRUSTED_ORIGINS = ['https://cnc-pwa.onrender.com']
 
@@ -106,9 +106,11 @@ else:
     # RenderのRedis接続数制限(50)を考慮し、channels_redisの接続数を制限する
     redis_url_with_limit = REDIS_URL
     if '?' in redis_url_with_limit:
-        redis_url_with_limit += '&max_connections=20'
+        # 既に他のパラメータがある場合は '&' を使う
+        redis_url_with_limit += '&max_connections=40'
     else:
-        redis_url_with_limit += '?max_connections=20'
+        # パラメータが何もない場合は '?' を使う
+        redis_url_with_limit += '?max_connections=40'
 
     CHANNEL_LAYERS = {
         "default": {
