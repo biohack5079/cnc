@@ -127,6 +127,10 @@ let dbPromise = typeof idb !== 'undefined' ? idb.openDB(DB_NAME, DB_VERSION, {
     if (oldVersion < 5 && !db.objectStoreNames.contains('directMessages')) {
       db.createObjectStore('directMessages', { keyPath: 'id' });
     }
+  },
+  blocked() {
+    console.warn('Database upgrade blocked. Please close other tabs of this app.');
+    updateStatus('Database upgrade blocked. Please close other tabs.', 'orange');
   }
 }) : null;
 if (!dbPromise) {
@@ -736,85 +740,47 @@ async function connectWebSocket() {
             // サーバーからの通知（不在着信や友達のオンライン通知）を処理する
             offlineActivityCache.clear(); // 新しい通知を受け取る前にキャッシュをクリア
             console.log("[DEBUG] Registered payload:", payload);
-            if (payload.notifications && Array.isArray(payload.notifications)) {
-                console.log("[DEBUG] Notifications:", payload.notifications);
-                for (const notification of payload.notifications) {
-                    if (notification.type === 'missed_call') {
-                        displayMissedCallNotification(notification.sender, notification.timestamp);
-                    } else if (notification.type === 'friend_online') {
-                        // 課金ユーザー、または無料期間中のユーザーのみが不在時アクティビティ通知を処理する
-                        // const db = await dbPromise;
-                        // const friend = await db.get('friends', notification.sender);
-                        // let isInFreeTrial = false;
-                        // if (friend && friend.added) {
-                        //     const addedDate = new Date(friend.added);
-                        //     const now = new Date();
-                        //     const thirtyDaysInMillis = 30 * 24 * 60 * 60 * 1000;
-                        //     isInFreeTrial = (now - addedDate) < thirtyDaysInMillis;
-                        // }
 
-                        // const canProcessNotification = isSubscribed || isInFreeTrial;
-                        const canProcessNotification = true;
-
-                        if (canProcessNotification) {
-                            // 友達の最終ログイン日時を更新し、不在時活動キャッシュに追加
-                            await updateFriendLastSeen(notification.sender, notification.timestamp);
-                            offlineActivityCache.add(notification.sender);
-                            let statusMessage = `Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`;
-                            // if (!isSubscribed && isInFreeTrial) {
-                            //     const lang = getLang();
-                            //     statusMessage += ` (${i18n[lang].freeTrial})`;
-                            // }
-                            updateStatus(statusMessage, 'purple');
-                        }
-                    } else if (notification.type === 'new_mail_notification') { // 変更: 'mail' から 'new_mail_notification' へ
-                        const mail = notification.payload || notification;
-                        // サーバーからの通知形式によってsenderやidの場所が異なる場合に対応
-                        if (!mail.sender && notification.sender) {
-                            mail.sender = notification.sender;
-                        }
-                        if (!mail.sender) continue;
-                        if (!mail.id) {
-                            mail.id = notification.id || generateUUID();
-                        }
-                        if (!mail.timestamp && notification.timestamp) {
-                            mail.timestamp = notification.timestamp;
-                        }
-
-                        // let db = null;
-                        // if (dbPromise) {
-                        //     try { db = await dbPromise; } catch (e) {}
-                        // }
-                        // let isInFreeTrial = true;
-                        // if (db) {
-                        //     const friend = await db.get('friends', mail.sender);
-                        //     if (friend) {
-                        //         const addedDate = friend.added ? new Date(friend.added) : new Date();
-                        //         const now = new Date();
-                        //         const thirtyDaysInMillis = 30 * 24 * 60 * 60 * 1000;
-                        //         isInFreeTrial = (now - addedDate) < thirtyDaysInMillis;
-                        //     }
-                        // }
-
-                        // const canProcessNotification = isSubscribed || isInFreeTrial;
-                        const canProcessNotification = true;
-
-                        if (canProcessNotification) {
-                            // 通知の段階ではDBに保存しない。
-                            // ここで保存すると displayStoredMails() で表示されてしまい、通知と重複するため。
-                            displayNewMailNotification(mail); // 変更: 直接表示せず、通知を表示
-                            if (document.visibilityState === 'visible') {
-                                playNotificationSound();
-                            }
-                        }
-                    }
-                }
-            }
-
+            // 先にUIをReady状態にする
             updateStatus('Connected to signaling server. Ready.', 'green');
             currentAppState = AppState.INITIAL;
             setInteractionUiEnabled(false);
-            await Promise.all([displayFriendList(), displayStoredMails(), displayStoredDirectMessages()]);
+
+            if (payload.notifications && Array.isArray(payload.notifications)) {
+                console.log("[DEBUG] Notifications:", payload.notifications);
+                // 通知のDB保存と反映をバックグラウンドで実行
+                (async () => {
+                    for (const notification of payload.notifications) {
+                        if (notification.type === 'missed_call') {
+                            displayMissedCallNotification(notification.sender, notification.timestamp);
+                        } else if (notification.type === 'friend_online') {
+                            const canProcessNotification = true;
+                            if (canProcessNotification) {
+                                await updateFriendLastSeen(notification.sender, notification.timestamp);
+                                offlineActivityCache.add(notification.sender);
+                                let statusMessage = `Friend ${notification.sender.substring(0,6)} was online at ${new Date(notification.timestamp).toLocaleTimeString()}`;
+                                updateStatus(statusMessage, 'purple');
+                            }
+                        } else if (notification.type === 'new_mail_notification') {
+                            const mail = notification.payload || notification;
+                            if (!mail.sender && notification.sender) mail.sender = notification.sender;
+                            if (mail.sender) {
+                                displayNewMailNotification(mail);
+                                if (document.visibilityState === 'visible') playNotificationSound();
+                            }
+                        }
+                    }
+                    // 全ての通知処理が終わったらリストを一度だけ再描画
+                    await displayFriendList();
+                })();
+            }
+            
+            // 履歴の読み込み（通知がない場合はリストも描画）
+            await Promise.all([displayStoredMails(), displayStoredDirectMessages()]);
+            if (!payload.notifications || payload.notifications.length === 0) {
+                await displayFriendList();
+            }
+
             // 友達との自動接続を開始する
             startAutoConnectFriendsTimer();
             if (pendingConnectionFriendId) {
@@ -920,6 +886,7 @@ async function connectWebSocket() {
             break;
       }
     } catch (error) {
+        console.error("Error processing signaling message:", error, event.data);
     }
   };
   signalingSocket.onclose = async (event) => {
@@ -947,33 +914,33 @@ async function connectWebSocket() {
 }
 
 function handleWebSocketReconnect() {
-    if (isAttemptingReconnect) return; // 既に再接続処理中なら何もしない
+    // すでにタイマーがセットされている（再接続待機中）場合は何もしない
+    if (wsReconnectTimer) return;
+
+    if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
+        updateStatus('Could not reconnect to signaling server. Please refresh.', 'red');
+        isAttemptingReconnect = false;
+        return;
+    }
 
     isAttemptingReconnect = true;
-    wsReconnectAttempts = 0;
     
-    const attemptReconnect = () => {
-      if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
-          updateStatus('Could not reconnect to signaling server. Please check your connection and refresh.', 'red');
-          isAttemptingReconnect = false;
-          return;
-      }
+    wsReconnectAttempts++;
+    let delay = INITIAL_WS_RECONNECT_DELAY_MS * Math.pow(1.5, wsReconnectAttempts - 1);
+    delay = Math.min(delay, MAX_WS_RECONNECT_DELAY_MS);
+    updateStatus(`Signaling disconnected. Reconnecting in ${Math.round(delay/1000)}s (Attempt ${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`, 'orange');
+    
+    // ピア接続をクリーンアップ
+    Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID, true));
+    Object.values(dataChannels).forEach(channel => { if (channel && channel.readyState !== 'closed') channel.close(); });
+    dataChannels = {};
 
-      wsReconnectAttempts++;
-      let delay = INITIAL_WS_RECONNECT_DELAY_MS * Math.pow(1.5, wsReconnectAttempts - 1);
-      delay = Math.min(delay, MAX_WS_RECONNECT_DELAY_MS);
-      updateStatus(`Signaling disconnected. Reconnecting in ${Math.round(delay/1000)}s (Attempt ${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`, 'orange');
-      Object.keys(peers).forEach(peerUUID => closePeerConnection(peerUUID));
-      Object.values(dataChannels).forEach(channel => { if (channel && channel.readyState !== 'closed') channel.close(); });
-      dataChannels = {};
-
-      if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-      wsReconnectTimer = setTimeout(async () => {
-          await connectWebSocket();
-          // connectWebSocketが成功すれば onopen で isAttemptingReconnect は false になる
-      }, delay);
-    };
-    attemptReconnect();
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(async () => {
+        wsReconnectTimer = null;
+        await connectWebSocket();
+        // 成功すれば onopen で wsReconnectAttempts と isAttemptingReconnect がリセットされます
+    }, delay);
 }
 function sendSignalingMessage(message) {
   if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
@@ -2647,17 +2614,29 @@ function handleMeetingRemoteTrack(peerUUID, track, stream) {
 
 // 共通のストリーム割り当てヘルパー関数
 function attachStreamToVideo(videoElement, stream, track) {
-    if (!videoElement.srcObject && stream) {
-        videoElement.srcObject = stream;
-    } else if (videoElement.srcObject) {
-        if (!videoElement.srcObject.getTrackById(track.id)) {
+    // モバイルでのインライン再生に必須の設定
+    videoElement.playsInline = true;
+    videoElement.autoplay = true;
+
+    if (stream) {
+        if (!videoElement.srcObject) {
+            videoElement.srcObject = stream;
+        } else if (!videoElement.srcObject.getTrackById(track.id)) {
             videoElement.srcObject.addTrack(track);
         }
-    } else {
-        console.warn("Could not set srcObject - no stream provided?");
     }
-    // Androidなどで再生を開始するために明示的にplayを呼ぶ
-    videoElement.play().catch(e => console.error("Error playing video:", e));
+
+    // 再生を試み、ブロックされたら標準のコントロール（再生ボタン）を表示
+    videoElement.play().then(() => {
+        videoElement.controls = false;
+    }).catch(() => {
+        videoElement.controls = true;
+    });
+
+    // 再生が開始されたら（ボタンが押されたら）コントロールを消す
+    videoElement.addEventListener('playing', () => {
+        videoElement.controls = false;
+    }, { once: true });
 }
 function updateQrCodeWithValue(value) {
     if (!qrElement) {
@@ -3255,35 +3234,6 @@ async function sendMail() {
 
 async function main() {
   updateStatus('Initializing...', 'black');
-
-  // DOM要素の取得をmain関数の最初に移動
-  qrElement = document.getElementById('qrcode');
-  statusElement = document.getElementById('connectionStatus');
-  qrReaderElement = document.getElementById('qr-reader');
-  qrResultsElement = document.getElementById('qr-reader-results');
-  localVideoElement = document.getElementById('localVideo');
-  remoteVideosContainer = document.getElementById('remoteVideosContainer');
-  messageAreaElement = document.getElementById('messageArea');
-  postAreaElement = document.getElementById('postArea');
-  incomingCallModal = document.getElementById('incomingCallModal');
-  callerIdElement = document.getElementById('callerId');
-  acceptCallButton = document.getElementById('acceptCallButton');
-  rejectCallButton = document.getElementById('rejectCallButton');
-  friendListElement = document.getElementById('friendList');
-  messageInputElement = document.getElementById('messageInput');
-  sendMessageButton = document.getElementById('sendMessage');
-  postInputElement = document.getElementById('postInput');
-  sendPostButton = document.getElementById('sendPost');
-  fileInputElement = document.getElementById('fileInput');
-  sendFileButton = document.getElementById('sendFile');
-  fileTransferStatusElement = document.getElementById('file-transfer-status');
-  callButton = document.getElementById('callButton');
-  frontCamButton = document.getElementById('frontCamButton');
-  backCamButton = document.getElementById('backCamButton');
-  startScanButton = document.getElementById('startScanButton');
-  if (!remoteVideosContainer) {
-      remoteVideosContainer = document.querySelector('.video-scroll-container');
-  }
 
   myDeviceId = localStorage.getItem('cybernetcall-deviceId') || generateUUID();
   localStorage.setItem('cybernetcall-deviceId', myDeviceId);
